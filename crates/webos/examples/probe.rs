@@ -24,13 +24,22 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use webos::{Client, ClientKey, Endpoint, Manifest, Options, PROMPT_WINDOW, Paired, Pairing};
+use webos::{
+    Button, Client, ClientKey, Endpoint, ForegroundApp, Inputs, Interfaces, LaunchPoints,
+    LinkStatus, MacAddress, Manifest, Options, PROMPT_WINDOW, Paired, Pairing, Picture, PowerState,
+    SoundOutput, Volume, WakeOnLan,
+};
 
 const USAGE: &str = "usage: probe hello <ip>
        probe pair <ip> <out-file> [signed|unsigned]
        probe capture <out-dir>
        probe request <uri> [payload-json]
-       probe watch <seconds> <uri>...";
+       probe watch <seconds> <uri>...
+       probe state
+       probe discover [seconds]
+       probe key <button>...
+       probe wake
+       probe luna <uri> <params-json>";
 
 type Result<T = (), E = Box<dyn std::error::Error>> = std::result::Result<T, E>;
 
@@ -45,6 +54,9 @@ struct Tv {
     key: ClientKey,
     #[serde(default = "unsigned")]
     manifest: Manifest,
+    /// The interface to wake, from pairing.
+    #[serde(default)]
+    mac: Option<MacAddress>,
 }
 
 fn unsigned() -> Manifest {
@@ -86,6 +98,20 @@ async fn run(args: &[&str]) -> Result {
         ["watch", seconds, uris @ ..] if !uris.is_empty() => {
             watch(&connect(&options).await?, seconds.parse()?, uris).await
         }
+        ["state"] => state(&connect(&options).await?).await,
+        ["discover"] => discover(3).await,
+        ["discover", seconds] => discover(seconds.parse()?).await,
+        ["key", buttons @ ..] if !buttons.is_empty() => {
+            keys(&connect(&options).await?, buttons).await
+        }
+        ["wake"] => wake().await,
+        ["luna", uri, params] => {
+            let client = connect(&options).await?;
+            let started = Instant::now();
+            client.luna(uri, serde_json::from_str(params)?).await?;
+            println!("alert closed in {:.2} s", started.elapsed().as_secs_f64());
+            Ok(())
+        }
         _ => Err(USAGE.into()),
     }
 }
@@ -126,11 +152,14 @@ async fn pair(ip: IpAddr, out: &Path, manifest: Option<Manifest>, options: &Opti
         key,
         manifest,
     } = client.paired().clone();
+    let interfaces: Interfaces = client.get().await?;
+    let status = client.get::<LinkStatus>().await.ok();
     let tv = Tv {
         address: ip,
         uuid: Some(uuid),
         key,
         manifest,
+        mac: interfaces.wake_address(status.as_ref()),
     };
     write_private(out, &serde_json::to_vec_pretty(&tv)?)?;
     println!("paired; written to {}", out.display());
@@ -138,9 +167,13 @@ async fn pair(ip: IpAddr, out: &Path, manifest: Option<Manifest>, options: &Opti
     Ok(())
 }
 
-async fn connect(options: &Options) -> Result<Client> {
+fn probe_tv() -> Result<Tv> {
     let path = std::env::var("WEBOS_PROBE_TV").map_err(|_| "set WEBOS_PROBE_TV")?;
-    let tv: Tv = serde_json::from_slice(&fs::read(&path)?)?;
+    Ok(serde_json::from_slice(&fs::read(&path)?)?)
+}
+
+async fn connect(options: &Options) -> Result<Client> {
+    let tv = probe_tv()?;
     let uuid = match tv.uuid {
         Some(uuid) => uuid,
         None => {
@@ -286,4 +319,90 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result {
     file.write_all(bytes)?;
     file.write_all(b"\n")?;
     Ok(())
+}
+
+/// The typed reports, without identifiers.
+async fn state(client: &Client) -> Result {
+    let power: PowerState = client.get().await?;
+    println!(
+        "power      {:?} on={} screen={}",
+        power.mode,
+        power.is_on(),
+        power.is_screen_on()
+    );
+    let app: ForegroundApp = client.get().await?;
+    println!("app        {}", app.0);
+    let volume: Volume = client.get().await?;
+    println!(
+        "volume     {}/{} muted={} output={:?}",
+        volume.level, volume.max, volume.muted, volume.output
+    );
+    let output: SoundOutput = client.get().await?;
+    println!("output     {}", output.0);
+    let picture: Picture = client.get().await?;
+    println!("picture    {picture:?}");
+    let wake: WakeOnLan = client.get().await?;
+    let link: LinkStatus = client.get().await?;
+    println!("wake       setting={} link={link:?}", wake.0);
+    let apps: LaunchPoints = client.get().await?;
+    println!("apps       {}", apps.0.len());
+    let inputs: Inputs = client.get().await?;
+    for input in inputs.0 {
+        println!(
+            "input      {} {:?} plugged={} connected={} {:?}",
+            input.id, input.label, input.plugged, input.connected, input.devices
+        );
+    }
+    Ok(())
+}
+
+async fn discover(seconds: u64) -> Result {
+    for tv in webos::discover(Duration::from_secs(seconds)).await? {
+        println!(
+            "{}  model {:?}  firmware {:?}  {:?}",
+            tv.name, tv.model, tv.firmware, tv.addresses
+        );
+    }
+    Ok(())
+}
+
+/// Presses the buttons in order, half a second apart.
+async fn keys(client: &Client, names: &[&str]) -> Result {
+    let buttons: Vec<Button> = names
+        .iter()
+        .map(|name| Button::from_name(name).ok_or_else(|| format!("no button {name}")))
+        .collect::<Result<_, _>>()?;
+    let remote = client.remote().await?;
+    for (i, button) in buttons.into_iter().enumerate() {
+        if i > 0 {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        remote.button(button).await?;
+        println!("{}", button.name());
+    }
+    remote.close().await;
+    Ok(())
+}
+
+/// Wakes the TV from the probe file and measures until its TLS port answers.
+async fn wake() -> Result {
+    let tv = probe_tv()?;
+    let mac = tv.mac.ok_or("the probe file has no mac; pair again")?;
+    let started = Instant::now();
+    webos::wake(mac).await?;
+    let options = Options::lg()?;
+    while started.elapsed() < Duration::from_secs(30) {
+        if webos::hello(Endpoint::secure(tv.address), &options)
+            .await
+            .is_ok()
+        {
+            println!(
+                "the TV answers after {:.1} s",
+                started.elapsed().as_secs_f64()
+            );
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    Err("no answer within 30 s".into())
 }

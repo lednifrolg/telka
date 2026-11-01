@@ -60,6 +60,9 @@ pub enum Error {
     /// The TV has no such service or method (404).
     #[error("the TV does not support {uri}")]
     Unsupported { uri: String },
+    /// Looking for TVs on the network failed.
+    #[error("mDNS discovery failed: {0}")]
+    Discovery(String),
     /// The TV took the request but could not do it, with its own explanation.
     #[error("the TV could not do it: {message}")]
     Rejected { message: String },
