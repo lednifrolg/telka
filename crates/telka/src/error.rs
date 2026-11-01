@@ -29,6 +29,9 @@ pub enum AppError {
     /// The TV is off, asleep or not at its address.
     #[error("{0}")]
     Unreachable(String),
+    /// The change was sent, but the TV did not report it in time; the text says what it reports.
+    #[error("{0}")]
+    NotConfirmed(String),
     #[error(transparent)]
     Tv(webos::Error),
     #[error("{path}: {source}")]
@@ -42,7 +45,7 @@ pub enum AppError {
 }
 
 impl AppError {
-    /// 2 usage, 4 pairing needed, 1 anything else.
+    /// 2 usage, 4 pairing needed, 5 change not confirmed, 1 anything else.
     pub fn exit_code(&self) -> ExitCode {
         ExitCode::from(match self {
             Self::Usage(_) => 2,
@@ -50,6 +53,7 @@ impl AppError {
             | Self::KeyRejected
             | Self::WrongTv { .. }
             | Self::UnknownCertificate { .. } => 4,
+            Self::NotConfirmed(_) => 5,
             Self::Unreachable(_) | Self::Tv(_) | Self::Io { .. } | Self::Corrupt { .. } => 1,
         })
     }
@@ -94,6 +98,10 @@ mod tests {
         assert_eq!(
             code(webos::Error::KeyRejected.into()),
             format!("{:?}", ExitCode::from(4))
+        );
+        assert_eq!(
+            code(AppError::NotConfirmed("x".into())),
+            format!("{:?}", ExitCode::from(5))
         );
         assert_eq!(
             code(AppError::Unreachable("x".into())),
