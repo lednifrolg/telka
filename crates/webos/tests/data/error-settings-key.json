@@ -1,0 +1,10 @@
+{
+  "type": "error",
+  "id": "picture-settings",
+  "error": "500 Application error",
+  "payload": {
+    "returnValue": false,
+    "errorCode": -1000,
+    "errorText": "Some keys are not allowed for the request. ( pictureMode )"
+  }
+}

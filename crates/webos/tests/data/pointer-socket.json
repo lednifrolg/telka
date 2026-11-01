@@ -1,0 +1,8 @@
+{
+  "type": "response",
+  "id": "pointer-socket",
+  "payload": {
+    "socketPath": "ws://192.168.1.30:3000/resources/1234567890abcdef1234567890abcdef12345678/netinput.pointer.sock",
+    "returnValue": true
+  }
+}

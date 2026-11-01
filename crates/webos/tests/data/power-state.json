@@ -1,0 +1,8 @@
+{
+  "type": "response",
+  "id": "power-state",
+  "payload": {
+    "returnValue": true,
+    "state": "Active"
+  }
+}

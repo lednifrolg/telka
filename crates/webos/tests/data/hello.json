@@ -1,0 +1,16 @@
+{
+  "type": "hello",
+  "payload": {
+    "protocolVersion": 1,
+    "deviceType": "tv",
+    "deviceOS": "webOS",
+    "deviceOSVersion": "4.1.0",
+    "deviceOSReleaseVersion": "6.5.3",
+    "deviceUUID": "4f1c2a7e-0b3d-4e6a-9c58-2d7f1e0a6b93",
+    "pairingTypes": [
+      "PIN",
+      "PROMPT",
+      "COMBINED"
+    ]
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "type": "response",
+  "id": "volume",
+  "payload": {
+    "volumeStatus": {
+      "activeStatus": true,
+      "adjustVolume": true,
+      "maxVolume": 100,
+      "muteStatus": false,
+      "volume": 20,
+      "mode": "normal",
+      "soundOutput": "tv_speaker"
+    },
+    "returnValue": true,
+    "callerId": "secondscreen.client"
+  }
+}

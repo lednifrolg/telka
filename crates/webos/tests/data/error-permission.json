@@ -1,0 +1,6 @@
+{
+  "type": "error",
+  "id": "software-info",
+  "error": "401 insufficient permissions",
+  "payload": {}
+}

@@ -1,0 +1,14 @@
+{
+  "type": "response",
+  "id": "system-info",
+  "payload": {
+    "returnValue": true,
+    "features": {
+      "dvr": false
+    },
+    "receiverType": "DVB",
+    "modelName": "OLED55C16LA",
+    "serialNumber": "101MAXX00001",
+    "programMode": true
+  }
+}

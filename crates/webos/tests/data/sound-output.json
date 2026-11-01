@@ -1,0 +1,8 @@
+{
+  "type": "response",
+  "id": "sound-output",
+  "payload": {
+    "returnValue": true,
+    "soundOutput": "tv_speaker"
+  }
+}

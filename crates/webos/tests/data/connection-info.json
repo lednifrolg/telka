@@ -1,0 +1,17 @@
+{
+  "type": "response",
+  "id": "connection-info",
+  "payload": {
+    "p2pInfo": {
+      "macAddress": "02:00:5E:10:00:03"
+    },
+    "subscribed": false,
+    "wifiInfo": {
+      "macAddress": "02:00:5E:10:00:01"
+    },
+    "wiredInfo": {
+      "macAddress": "02:00:5E:10:00:02"
+    },
+    "returnValue": true
+  }
+}
