@@ -63,7 +63,8 @@ impl Report for Inputs {
 }
 
 impl Client {
-    /// Switches to the input `id`, like `HDMI_3`.
+    /// Switches to the input `id`, like `HDMI_3`. Over HDMI-CEC this can turn on the device on it,
+    /// which may then switch the TV to itself again.
     pub async fn switch_input(&self, id: &str) -> Result<(), Error> {
         self.request("tv/switchInput", json!({"inputId": id}))
             .await?;

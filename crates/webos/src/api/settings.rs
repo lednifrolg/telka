@@ -8,8 +8,9 @@
 //!
 //! Writing goes around SSAP: an alert whose close action is a call to the TV's internal Luna
 //! bus, which the notification service makes with its own rights ([`Client::luna`]). That needs
-//! the `WRITE_NOTIFICATION_ALERT` permission of LG's signed manifest, returns nothing, and can
-//! flash the alert on screen.
+//! the `WRITE_NOTIFICATION_ALERT` permission of LG's signed manifest and returns nothing. On a C1
+//! the alert never showed, and picture settings changed as asked; the sleep timer in category
+//! `time` did not, although the call went through.
 
 use std::time::Duration;
 

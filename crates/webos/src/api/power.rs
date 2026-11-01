@@ -1,13 +1,16 @@
 //! Power: what state the TV is in, turning it off, and the screen alone.
 //!
 //! An SSAP request cannot turn a TV on, since it closes its sockets when it sleeps; that takes
-//! Wake-on-LAN, see [`crate::wake`].
+//! Wake-on-LAN, see [`crate::wake_and_wait`]. And Wake-on-LAN works only after the TV went off
+//! the way its remote turns it off: on a C1, after `system/turnOff` no magic packet woke it, after
+//! the power button every time.
 
 use serde_json::{Value, json};
 
 use super::{Report, missing};
 use crate::client::Client;
 use crate::error::Error;
+use crate::pointer::Button;
 
 /// The TV's power state, as `com.webos.service.tvpower/power/getPowerState` reports it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,13 +79,16 @@ impl Report for PowerState {
 }
 
 impl Client {
-    /// Turns the TV off. Sends nothing and returns `false` when the TV is not on: in Active
-    /// Standby the same request would turn it on.
+    /// Turns the TV off with the power button, so that Wake-on-LAN can turn it on again. Sends
+    /// nothing and returns `false` when the TV is not on: the button toggles, and would turn a TV
+    /// in Active Standby on.
     pub async fn turn_off(&self) -> Result<bool, Error> {
         if !self.get::<PowerState>().await?.is_on() {
             return Ok(false);
         }
-        self.request("system/turnOff", json!({})).await?;
+        let remote = self.remote().await?;
+        remote.button(Button::POWER).await?;
+        remote.close().await;
         Ok(true)
     }
 

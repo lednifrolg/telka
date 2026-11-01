@@ -39,6 +39,7 @@ const USAGE: &str = "usage: probe hello <ip>
        probe discover [seconds]
        probe key <button>...
        probe wake
+       probe off
        probe luna <uri> <params-json>";
 
 type Result<T = (), E = Box<dyn std::error::Error>> = std::result::Result<T, E>;
@@ -105,6 +106,18 @@ async fn run(args: &[&str]) -> Result {
             keys(&connect(&options).await?, buttons).await
         }
         ["wake"] => wake().await,
+        ["off"] => {
+            let sent = connect(&options).await?.turn_off().await?;
+            println!(
+                "{}",
+                if sent {
+                    "power button pressed"
+                } else {
+                    "the TV is not on"
+                }
+            );
+            Ok(())
+        }
         ["luna", uri, params] => {
             let client = connect(&options).await?;
             let started = Instant::now();
@@ -388,21 +401,23 @@ async fn keys(client: &Client, names: &[&str]) -> Result {
 async fn wake() -> Result {
     let tv = probe_tv()?;
     let mac = tv.mac.ok_or("the probe file has no mac; pair again")?;
-    let started = Instant::now();
-    webos::wake(mac).await?;
     let options = Options::lg()?;
-    while started.elapsed() < Duration::from_secs(30) {
-        if webos::hello(Endpoint::secure(tv.address), &options)
-            .await
-            .is_ok()
-        {
-            println!(
-                "the TV answers after {:.1} s",
-                started.elapsed().as_secs_f64()
-            );
-            return Ok(());
+    // A TV that was just turned off answers for a few more seconds.
+    let going = Instant::now();
+    while webos::hello(Endpoint::secure(tv.address), &options)
+        .await
+        .is_ok()
+    {
+        if going.elapsed() > Duration::from_secs(30) {
+            return Err("the TV is on".into());
         }
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        tokio::time::sleep(Duration::from_secs(1)).await;
     }
-    Err("no answer within 30 s".into())
+    let started = Instant::now();
+    webos::wake_and_wait(mac, tv.address, &options, webos::WAKE_WINDOW).await?;
+    println!(
+        "the TV answers after {:.1} s",
+        started.elapsed().as_secs_f64()
+    );
+    Ok(())
 }

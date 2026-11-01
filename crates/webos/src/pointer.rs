@@ -98,6 +98,8 @@ impl Button {
     pub const PAUSE: Self = Self("PAUSE");
     pub const REWIND: Self = Self("REWIND");
     pub const FAST_FORWARD: Self = Self("FASTFORWARD");
+    /// Toggles: turns the TV off, and on from Active Standby.
+    pub const POWER: Self = Self("POWER");
 
     /// The button called `name`, in any case.
     pub fn from_name(name: &str) -> Option<Self> {
