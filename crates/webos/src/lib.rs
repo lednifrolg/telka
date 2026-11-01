@@ -3,8 +3,25 @@
 //! SSAP (Simple Service Access Protocol) is the WebSocket API that LG's own remote apps use on the
 //! home network. LG does not document it; this crate follows what the community worked out from
 //! that traffic, checked against an LG C1 on webOS 6.5.3. Every command acts on a real TV that
-//! someone may be watching. The crate has no UI dependencies; the `telka` binary builds the CLI
-//! and TUI on top of it.
+//! someone may be watching, so nothing is retried behind the caller's back. The crate has no UI
+//! dependencies; the `telka` binary builds the CLI and TUI on top of it.
+//!
+//! A typical session: pair once with [`Pairing`] while someone accepts the prompt on the TV, and
+//! keep [`Client::paired`]. Later, [`Client::connect_to`] the TV with it, send requests with
+//! [`Client::request`] and follow changes with [`Client::subscribe`].
+
+mod client;
+mod error;
+mod frame;
+mod pair;
+mod tls;
+mod transport;
+
+pub use client::{Client, Paired, Subscription};
+pub use error::Error;
+pub use pair::{ClientKey, Hello, Manifest, Options, PROMPT_WINDOW, Pairing, Timing, hello};
+pub use tls::{Fingerprint, LG_TV_CERTIFICATE, ParseFingerprintError, Tls};
+pub use transport::Endpoint;
 
 /// TCP port of the plain WebSocket API. Still open on webOS 6; firmware from 2023 on closes it on
 /// newer models, so [`WSS_PORT`] comes first.
