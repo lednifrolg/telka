@@ -1,0 +1,51 @@
+{
+  "type": "response",
+  "id": "inputs",
+  "payload": {
+    "returnValue": true,
+    "devices": [
+      {
+        "id": "HDMI_1",
+        "label": "Game Console",
+        "port": 1,
+        "connected": true,
+        "appId": "com.webos.app.hdmi1",
+        "icon": "http://192.168.1.30:3000/resources/0f0e0d0c0b0a09080706050403020100aabbccdd/hdmi_game.png",
+        "forceIcon": false,
+        "modified": true,
+        "lastUniqueId": 2,
+        "hdmiPlugIn": true,
+        "subList": [
+          {
+            "id": "SIMPLINK",
+            "portId": 1,
+            "uniqueId": 2,
+            "vendorId": 1234,
+            "physicalAddress": 4096,
+            "depth": 1,
+            "osdName": "Game Console",
+            "cecpDevType": 4,
+            "cecpNewType": 9
+          }
+        ],
+        "subCount": 1,
+        "favorite": false
+      },
+      {
+        "id": "HDMI_2",
+        "label": "HDMI 2",
+        "port": 2,
+        "connected": false,
+        "appId": "com.webos.app.hdmi2",
+        "icon": "http://192.168.1.30:3000/resources/00112233445566778899aabbccddeeff00112233/hdmi.png",
+        "forceIcon": false,
+        "modified": false,
+        "lastUniqueId": -1,
+        "hdmiPlugIn": false,
+        "subList": [],
+        "subCount": 0,
+        "favorite": false
+      }
+    ]
+  }
+}

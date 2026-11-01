@@ -1,0 +1,29 @@
+{
+  "type": "response",
+  "id": "launch-points",
+  "payload": {
+    "subscribed": false,
+    "caseDetail": {
+      "change": []
+    },
+    "launchPoints": [
+      {
+        "systemApp": false,
+        "removable": true,
+        "relaunch": false,
+        "mediumLargeIcon": "/media/cryptofs/apps/usr/palm/applications/netflix/icon_medium.png",
+        "id": "netflix",
+        "title": "Netflix"
+      },
+      {
+        "systemApp": true,
+        "removable": false,
+        "relaunch": false,
+        "mediumLargeIcon": "/usr/palm/applications/com.webos.app.browser/icon_medium.png",
+        "id": "com.webos.app.browser",
+        "title": "Web Browser"
+      }
+    ],
+    "returnValue": true
+  }
+}

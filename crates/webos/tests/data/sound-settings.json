@@ -1,0 +1,13 @@
+{
+  "type": "response",
+  "id": "sound-settings",
+  "payload": {
+    "returnValue": true,
+    "subscribed": false,
+    "category": "sound",
+    "settings": {
+      "soundMode": "standard",
+      "soundOutput": "tv_speaker"
+    }
+  }
+}

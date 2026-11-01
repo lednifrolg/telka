@@ -1,0 +1,10 @@
+{
+  "type": "response",
+  "id": "foreground-app",
+  "payload": {
+    "appId": "netflix",
+    "returnValue": true,
+    "windowId": "",
+    "processId": ""
+  }
+}
