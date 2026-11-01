@@ -1,6 +1,6 @@
 ---
 source: crates/telka/src/tui/view.rs
-assertion_line: 951
+assertion_line: 1021
 expression: "screen(&model, 110, 26)"
 ---
 "╭ TV ─────────────────────────────── pairing ╮╭ remote ─────────────────────────────────── keys go to the TV ╮"
@@ -10,7 +10,7 @@ expression: "screen(&model, 110, 26)"
 "│                                            ││             ▼               apps     inputs                  │"
 "│                                            ││                                                              │"
 "│                                            ││      ◀◀   play/pause   ▶▶   - vol +  mute                    │"
-"│                                            ││                                                              │"
+"│                                            ││ pointer  drag here to move it · click · wheel scrolls        │"
 "│                                            ││ sent     nothing yet                                         │"
 "╰────────────────────────────────────────────╯╰──────────────────────────────────────────────────────────────╯"
 "╭ activity ──────────────╭ pair with the TV ─────────────────────────────────────────╮────────────────── off ╮"

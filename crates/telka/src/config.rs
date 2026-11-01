@@ -14,6 +14,15 @@ use crate::paths::Paths;
 pub struct Config {
     /// The TV's address, when it has a fixed one: telka then never looks for it on the network.
     pub tv: Option<IpAddr>,
+    /// How many pixels on the TV a drag of one terminal column moves the pointer; a row moves it
+    /// twice as far, since rows are about twice as tall. 12 by default.
+    pub pointer_speed: Option<u16>,
+}
+
+impl Config {
+    pub fn pointer_speed(&self) -> i32 {
+        i32::from(self.pointer_speed.unwrap_or(12).clamp(1, 200))
+    }
 }
 
 pub fn load(paths: &Paths) -> Result<Config, AppError> {

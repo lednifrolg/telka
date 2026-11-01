@@ -1,6 +1,6 @@
 ---
 source: crates/telka/src/tui/view.rs
-assertion_line: 944
+assertion_line: 1014
 expression: "screen(&model, 110, 26)"
 ---
 "╭ OLED55C16LA ─────────────────── screen off ╮╭ remote ─────────────────────────────────── keys go to the TV ╮"
@@ -10,7 +10,7 @@ expression: "screen(&model, 110, 26)"
 "│ sound    TV speaker · movie                ││             ▼               apps     inputs                  │"
 "│                                            ││                                                              │"
 "│ light    ━━━━━━━━━━━━━━━━━━━━━━──────   80 ││      ◀◀   play/pause   ▶▶   - vol +  mute                    │"
-"│ energy   auto                              ││                                                              │"
+"│ energy   auto                              ││ pointer  drag here to move it · click · wheel scrolls        │"
 "│ mode     the TV does not tell              ││ sent     ↑ ↑ OK                                              │"
 "╰────────────────────────────────────────────╯╰──────────────────────────────────────────────────────────────╯"
 "╭ activity ──────────────────────────────────────────────────────────────────────────────────────────── live ╮"

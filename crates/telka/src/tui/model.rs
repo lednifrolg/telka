@@ -8,7 +8,7 @@ use std::time::Duration;
 use jiff::tz::TimeZone;
 use jiff::{SignedDuration, Timestamp};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use webos::{App, Button, Input, Picture, PowerMode, PowerState, Volume};
+use webos::{App, Button, Input, Keyboard, Picture, PowerMode, PowerState, Volume};
 
 use super::keymap::{self, Action};
 use crate::names::fold;
@@ -56,6 +56,22 @@ pub enum Change {
     App(String),
     Volume(Volume),
     Output(String),
+    /// A text field on the TV got or lost focus.
+    Keyboard(Keyboard),
+}
+
+/// What the mouse does with the TV's pointer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pointer {
+    /// By pixels on the TV.
+    Move {
+        dx: i32,
+        dy: i32,
+    },
+    Click,
+    Scroll {
+        dy: i32,
+    },
 }
 
 /// Why there is no connection.
@@ -93,6 +109,10 @@ pub enum Msg {
     Wheel {
         up: bool,
     },
+    /// The mouse in the remote pane, as the TV's pointer.
+    Pointer(Pointer),
+    /// Something sent without an activity line failed.
+    Failed(String),
     Tab(Tab),
     Connected(Result<Box<Snapshot>, Failure>),
     Changed(Change),
@@ -114,6 +134,13 @@ pub enum Effect {
         after: Duration,
     },
     Press(Button),
+    Pointer(Pointer),
+    /// Text into the field with focus, as it is typed.
+    Type(String),
+    /// Backspace in the field with focus.
+    Delete,
+    /// Enter in the field with focus.
+    Enter,
     /// The latest wanted volume: older ones still on their way are dropped.
     Volume(u8),
     Mute {
@@ -191,6 +218,8 @@ impl Tab {
 pub enum PickerKind {
     Apps,
     Inputs,
+    /// Every button of the remote.
+    Buttons,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -210,11 +239,23 @@ pub struct Choice {
     pub current: bool,
 }
 
+/// The line that types into the TV's text field.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextLine {
+    /// What was typed since it opened.
+    pub text: String,
+    /// What kind of field has focus, like `url`, when the TV said.
+    pub field: Option<String>,
+    /// A password field: shown as dots.
+    pub hidden: bool,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Overlay {
     None,
     Help,
     Picker(Picker),
+    Text(TextLine),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -288,6 +329,8 @@ pub struct Model {
     pending: Vec<Pending>,
     /// The buttons sent last, oldest first.
     pub sent: VecDeque<&'static str>,
+    /// What the pointer did last.
+    pub pointer: Option<String>,
     pub tab: Tab,
     pub notice: Option<Notice>,
     off_armed: Option<Timestamp>,
@@ -308,6 +351,7 @@ impl Model {
             next_entry: 1,
             pending: Vec::new(),
             sent: VecDeque::new(),
+            pointer: None,
             tab: Tab::Tv,
             notice: None,
             off_armed: None,
@@ -386,6 +430,22 @@ impl Model {
                 self.tab = tab;
                 Vec::new()
             }
+            Msg::Pointer(pointer) => {
+                if self.phase != Phase::Live {
+                    return Vec::new();
+                }
+                self.pointer = Some(match pointer {
+                    Pointer::Move { dx, dy } => format!("move  dx {dx:+}  dy {dy:+}"),
+                    Pointer::Click => "click".into(),
+                    Pointer::Scroll { dy } if dy < 0 => "scroll up".into(),
+                    Pointer::Scroll { .. } => "scroll down".into(),
+                });
+                vec![Effect::Pointer(pointer)]
+            }
+            Msg::Failed(message) => {
+                self.notice(message);
+                Vec::new()
+            }
             Msg::Connected(Ok(snapshot)) => self.connected(*snapshot),
             Msg::Connected(Err(failure)) => self.failed(failure),
             Msg::Changed(change) => {
@@ -451,6 +511,7 @@ impl Model {
                 return Vec::new();
             }
             Overlay::Picker(_) => return self.picker_key(key),
+            Overlay::Text(_) => return self.text_key(key),
             Overlay::None => {}
         }
         if let Phase::Pairing(dialog) = &self.phase {
@@ -544,11 +605,19 @@ impl Model {
                     entry,
                 }]
             }
-            Action::Apps | Action::Inputs => {
-                let kind = if action == Action::Apps {
-                    PickerKind::Apps
-                } else {
-                    PickerKind::Inputs
+            Action::Type => {
+                self.overlay = Overlay::Text(TextLine {
+                    text: String::new(),
+                    field: None,
+                    hidden: false,
+                });
+                Vec::new()
+            }
+            Action::Apps | Action::Inputs | Action::Buttons => {
+                let kind = match action {
+                    Action::Apps => PickerKind::Apps,
+                    Action::Inputs => PickerKind::Inputs,
+                    _ => PickerKind::Buttons,
                 };
                 self.overlay = Overlay::Picker(Picker {
                     kind,
@@ -682,6 +751,43 @@ impl Model {
         Vec::new()
     }
 
+    fn text_key(&mut self, key: KeyEvent) -> Vec<Effect> {
+        let Overlay::Text(line) = &mut self.overlay else {
+            return Vec::new();
+        };
+        match key.code {
+            KeyCode::Esc => self.close_text(),
+            KeyCode::Enter => {
+                self.close_text();
+                vec![Effect::Enter]
+            }
+            KeyCode::Backspace => {
+                line.text.pop();
+                vec![Effect::Delete]
+            }
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                line.text.push(c);
+                vec![Effect::Type(c.to_string())]
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// Closes the text line, telling what went into the TV.
+    fn close_text(&mut self) -> Vec<Effect> {
+        if let Overlay::Text(line) = std::mem::replace(&mut self.overlay, Overlay::None)
+            && !line.text.is_empty()
+        {
+            let shown = if line.hidden {
+                "•".repeat(line.text.chars().count())
+            } else {
+                line.text
+            };
+            self.log("type", format!("\"{shown}\""), Status::Info);
+        }
+        Vec::new()
+    }
+
     /// The rows of the open picker, filtered.
     pub fn choices(&self) -> Vec<Choice> {
         let (Overlay::Picker(picker), Some(tv)) = (&self.overlay, &self.tv) else {
@@ -689,6 +795,14 @@ impl Model {
         };
         let wanted = fold(&picker.filter);
         let all: Vec<Choice> = match picker.kind {
+            PickerKind::Buttons => Button::all()
+                .map(|button| Choice {
+                    id: button.name().to_owned(),
+                    title: button.name().to_owned(),
+                    detail: String::new(),
+                    current: false,
+                })
+                .collect(),
             PickerKind::Apps => tv
                 .apps
                 .iter()
@@ -710,17 +824,23 @@ impl Model {
                 })
                 .collect(),
         };
-        all.into_iter()
+        // Names that start with the filter first, then the ones that contain it.
+        let (starting, containing): (Vec<Choice>, Vec<Choice>) = all
+            .into_iter()
             .filter(|choice| {
                 wanted.is_empty()
                     || fold(&choice.title).contains(&wanted)
                     || fold(&choice.detail).contains(&wanted)
             })
-            .collect()
+            .partition(|choice| fold(&choice.title).starts_with(&wanted));
+        starting.into_iter().chain(containing).collect()
     }
 
     fn choose(&mut self, kind: PickerKind, choice: Choice) -> Vec<Effect> {
         match kind {
+            PickerKind::Buttons => Button::from_name(&choice.id)
+                .map(|button| self.press(button))
+                .unwrap_or_default(),
             PickerKind::Apps => {
                 let entry = self.expect(
                     "app",
@@ -909,6 +1029,17 @@ impl Model {
                 let after = theme::power(&power);
                 if settled.is_none() && before != after {
                     self.log_change("power", format!("{before} → {after}"));
+                }
+            }
+            Change::Keyboard(keyboard) => {
+                if keyboard.focused && self.overlay == Overlay::None {
+                    self.overlay = Overlay::Text(TextLine {
+                        text: String::new(),
+                        field: keyboard.content_type,
+                        hidden: keyboard.hidden,
+                    });
+                } else if !keyboard.focused && matches!(self.overlay, Overlay::Text(_)) {
+                    self.close_text();
                 }
             }
             Change::Output(output) => {
@@ -1289,6 +1420,78 @@ pub mod tests {
         assert_eq!(effects, [Effect::Connect { after: RETRY }]);
         model.update(Msg::Connected(Ok(Box::new(snapshot()))));
         assert_eq!(model.activity[0].text, "off → on");
+    }
+
+    fn focus(field: Option<&str>, hidden: bool) -> Msg {
+        Msg::Changed(Change::Keyboard(Keyboard {
+            focused: field.is_some(),
+            content_type: field.map(str::to_owned),
+            hidden,
+        }))
+    }
+
+    #[test]
+    fn a_text_field_on_the_tv_opens_the_line_and_typing_goes_out_at_once() {
+        let mut model = live();
+        model.update(focus(Some("url"), false));
+        assert!(
+            matches!(&model.overlay, Overlay::Text(line) if line.field.as_deref() == Some("url"))
+        );
+        assert_eq!(
+            model.update(key(KeyCode::Char('h'))),
+            [Effect::Type("h".into())]
+        );
+        assert_eq!(
+            model.update(key(KeyCode::Char('i'))),
+            [Effect::Type("i".into())]
+        );
+        assert_eq!(model.update(key(KeyCode::Backspace)), [Effect::Delete]);
+        model.update(key(KeyCode::Char('o')));
+        // Letters go into the field, not to telka's keys.
+        assert!(matches!(&model.overlay, Overlay::Text(line) if line.text == "ho"));
+        assert_eq!(model.update(key(KeyCode::Enter)), [Effect::Enter]);
+        assert_eq!(model.overlay, Overlay::None);
+        assert_eq!(model.activity[0].text, "\"ho\"");
+
+        model.update(focus(Some("text"), true));
+        model.update(key(KeyCode::Char('x')));
+        model.update(focus(None, false));
+        assert_eq!(model.overlay, Overlay::None, "the field lost focus");
+        assert_eq!(model.activity[0].text, "\"•\"", "a password stays hidden");
+
+        model.update(key(KeyCode::Char('t')));
+        assert!(matches!(&model.overlay, Overlay::Text(line) if line.field.is_none()));
+        model.update(key(KeyCode::Esc));
+        assert_eq!(model.overlay, Overlay::None);
+    }
+
+    #[test]
+    fn the_mouse_moves_the_pointer_only_while_the_tv_is_on() {
+        let mut model = live();
+        let effects = model.update(Msg::Pointer(Pointer::Move { dx: 24, dy: -12 }));
+        assert_eq!(
+            effects,
+            [Effect::Pointer(Pointer::Move { dx: 24, dy: -12 })]
+        );
+        assert_eq!(model.pointer.as_deref(), Some("move  dx +24  dy -12"));
+        model.update(Msg::Pointer(Pointer::Click));
+        assert_eq!(model.pointer.as_deref(), Some("click"));
+        model.update(Msg::Lost);
+        assert_eq!(model.update(Msg::Pointer(Pointer::Click)), []);
+    }
+
+    #[test]
+    fn any_button_can_be_picked_by_name() {
+        let mut model = live();
+        model.update(key(KeyCode::Char('k')));
+        for c in "info".chars() {
+            model.update(key(KeyCode::Char(c)));
+        }
+        assert_eq!(
+            model.update(key(KeyCode::Enter)),
+            [Effect::Press(Button::INFO)]
+        );
+        assert_eq!(model.sent.back(), Some(&"INFO"));
     }
 
     #[test]
