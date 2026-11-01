@@ -6,23 +6,19 @@ use std::time::Duration;
 use serde::Serialize;
 use serde_json::{Value, json};
 use webos::{
-    Client, Endpoint, ForegroundApp, Inputs, Interfaces, LaunchPoints, LinkStatus, Manifest,
-    Pairing, Picture, PowerState, SoundSettings, SystemInfo, Volume, WakeOnLan,
+    ForegroundApp, Inputs, LaunchPoints, Manifest, Picture, PowerState, SoundSettings, Volume,
 };
 
 use crate::config::Config;
-use crate::connect::{self, Tv};
+use crate::connect::Tv;
 use crate::error::AppError;
 use crate::output::{self, BOLD, DIM, GREEN, YELLOW, paint};
+use crate::pairing;
 use crate::paths::Paths;
 use crate::store::Paired;
 use crate::theme;
 
 const DISCOVERY_WAIT: Duration = Duration::from_secs(3);
-
-/// Where "Turn on via Wi-Fi" is on a webOS 6 TV.
-const WAKE_SETTING: &str =
-    "Settings > General > Devices > External Devices > TV On With Mobile > Turn on via Wi-Fi";
 
 pub async fn pair(paths: &Paths, address: Option<IpAddr>) -> Result<(), AppError> {
     if address.is_none()
@@ -34,28 +30,8 @@ pub async fn pair(paths: &Paths, address: Option<IpAddr>) -> Result<(), AppError
         ));
         return Ok(());
     }
-    let options = connect::options()?;
-    let (pairing, ip) = if let Some(test) = connect::test_tv()? {
-        let endpoint = Endpoint {
-            address: test,
-            secure: false,
-        };
-        (start(endpoint, &options).await?, test.ip())
-    } else {
-        let ip = match address {
-            Some(ip) => ip,
-            None => find_one().await?,
-        };
-        // The TLS port first; a TV that refuses it may still pair over the plain one.
-        let pairing = match Pairing::start(Endpoint::secure(ip), &options).await {
-            Err(webos::Error::Connect(_) | webos::Error::WebSocket(_)) => {
-                start(Endpoint::plain(ip), &options).await?
-            }
-            other => other.map_err(|error| connect::refused(error, &ip))?,
-        };
-        (pairing, ip)
-    };
-    let manifest = pairing.manifest();
+    let started = pairing::start(address).await?;
+    let manifest = started.manifest();
     let window = webos::PROMPT_WINDOW.as_secs();
     match manifest {
         Manifest::Signed => output::line(format!(
@@ -66,89 +42,23 @@ pub async fn pair(paths: &Paths, address: Option<IpAddr>) -> Result<(), AppError
             "Accept the prompt on the TV with the remote ({window} s)"
         )),
     }
-    let client = pairing.finish(webos::PROMPT_WINDOW).await?;
-    let paired = describe(&client, ip, manifest).await?;
-    paired.save(paths)?;
+    let (client, paired) = pairing::finish(paths, started).await?;
     let manifest_text = match manifest {
         Manifest::Signed => "LG's signed manifest",
         Manifest::Unsigned => "the unsigned manifest",
     };
     output::success(format!(
-        "paired with {} at {ip} ({manifest_text})",
-        paired.model
+        "paired with {} at {} ({manifest_text})",
+        paired.model, paired.address
     ));
     if manifest == Manifest::Unsigned {
         output::note("the TV refused LG's signed manifest, so picture settings stay read-only");
     }
-    match client.get::<WakeOnLan>().await {
-        Ok(WakeOnLan(true)) if paired.mac.is_some() => {}
-        Ok(_) => output::warn(format!(
-            "telka cannot turn this TV on: turn on \"Turn on via Wi-Fi\" ({WAKE_SETTING})"
-        )),
-        Err(_) => {}
+    if let Some(problem) = pairing::wake_problem(&client, &paired).await {
+        output::warn(problem);
     }
     client.close().await;
     Ok(())
-}
-
-async fn start(endpoint: Endpoint, options: &webos::Options) -> Result<Pairing, AppError> {
-    Pairing::start(endpoint, options)
-        .await
-        .map_err(|error| connect::refused(error, &endpoint.address.ip()))
-}
-
-/// The one LG TV on the network.
-async fn find_one() -> Result<IpAddr, AppError> {
-    let found = webos::discover(DISCOVERY_WAIT).await?;
-    match found.as_slice() {
-        [] => Err(AppError::Usage(
-            "no LG TV answered on the network; give its address: `telka pair 192.168.1.30`".into(),
-        )),
-        [tv] => tv
-            .addresses
-            .first()
-            .copied()
-            .ok_or_else(|| AppError::Usage(format!("{} announced no address", tv.name))),
-        several => {
-            let list: Vec<String> = several
-                .iter()
-                .map(|tv| {
-                    let address = tv
-                        .addresses
-                        .first()
-                        .map(ToString::to_string)
-                        .unwrap_or_default();
-                    format!("{} at {address}", tv.name)
-                })
-                .collect();
-            Err(AppError::Usage(format!(
-                "several TVs answered: {}; give the address of one: `telka pair <address>`",
-                list.join(", ")
-            )))
-        }
-    }
-}
-
-/// What to keep of a fresh pairing: identity, model, and the interface to wake.
-async fn describe(
-    client: &Client,
-    address: IpAddr,
-    manifest: Manifest,
-) -> Result<Paired, AppError> {
-    let info: SystemInfo = client.get().await?;
-    let interfaces: Option<Interfaces> = client.get().await.ok();
-    let link: Option<LinkStatus> = client.get().await.ok();
-    let credentials = client.paired();
-    Ok(Paired {
-        uuid: credentials.uuid.clone(),
-        model: info.model,
-        address,
-        serial: info.serial,
-        mac: interfaces.and_then(|interfaces| interfaces.wake_address(link.as_ref())),
-        manifest,
-        key: credentials.key.clone(),
-        since: jiff::Timestamp::now(),
-    })
 }
 
 pub fn unpair(paths: &Paths) -> Result<(), AppError> {

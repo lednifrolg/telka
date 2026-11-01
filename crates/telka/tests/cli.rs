@@ -223,5 +223,9 @@ async fn completions_and_man_pages_need_no_tv() {
     }
     let help = telka.run(&[]).await;
     assert_eq!(code(&help), 2);
-    assert!(stderr(&help).contains("Usage: telka"), "{}", stderr(&help));
+    assert!(
+        stderr(&help).contains("opens the TUI, which needs a terminal"),
+        "{}",
+        stderr(&help)
+    );
 }

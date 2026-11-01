@@ -8,9 +8,11 @@ mod error;
 mod files;
 mod names;
 mod output;
+mod pairing;
 mod paths;
 mod store;
 mod theme;
+mod tui;
 mod watch;
 
 use std::net::IpAddr;
@@ -33,7 +35,7 @@ use crate::paths::Paths;
     version,
     propagate_version = true,
     about,
-    arg_required_else_help = true
+    after_help = "Without a command, telka opens the interactive TUI."
 )]
 struct Cli {
     /// Print JSON instead of text.
@@ -43,7 +45,7 @@ struct Cli {
     #[arg(long, global = true)]
     no_wait: bool,
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -184,12 +186,12 @@ fn man_pages(command: clap::Command, dir: &Path) -> std::io::Result<()> {
 async fn run(cli: Cli) -> Result<(), AppError> {
     // These need no TV and no files, so they work before anything is set up.
     match &cli.command {
-        Command::Completions { shell } => {
+        Some(Command::Completions { shell }) => {
             let mut script = Vec::new();
             clap_complete::generate(*shell, &mut Cli::command(), "telka", &mut script);
             return output::raw(&script);
         }
-        Command::Man { dir } => {
+        Some(Command::Man { dir }) => {
             if dir.exists() && !dir.is_dir() {
                 return Err(AppError::Usage(format!(
                     "{} is not a directory",
@@ -208,9 +210,12 @@ async fn run(cli: Cli) -> Result<(), AppError> {
         _ => {}
     }
     let paths = Paths::discover()?;
+    let Some(command) = cli.command else {
+        return tui::run(paths).await;
+    };
     let config = config::load(&paths)?;
     let (json, no_wait) = (cli.json, cli.no_wait);
-    match cli.command {
+    match command {
         Command::Pair { address } => return commands::pair(&paths, address).await,
         Command::Unpair => return commands::unpair(&paths),
         Command::Discover => return commands::discover(&paths, json).await,
@@ -227,7 +232,7 @@ async fn run(cli: Cli) -> Result<(), AppError> {
         _ => {}
     }
     let tv = Tv::connect(&paths, &config).await?;
-    let result = match cli.command {
+    let result = match command {
         Command::Off => control::off(&tv, no_wait).await,
         Command::Screen { state } => {
             control::screen(&tv, matches!(state, OnOff::On), no_wait).await
