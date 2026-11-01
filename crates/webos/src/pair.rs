@@ -270,7 +270,7 @@ pub struct Pairing {
     endpoint: Endpoint,
     hello: Hello,
     manifest: Manifest,
-    timing: Timing,
+    options: Options,
     /// Set when the TV registered without asking.
     issued: Option<ClientKey>,
 }
@@ -316,7 +316,7 @@ impl Pairing {
             endpoint,
             hello,
             manifest,
-            timing: options.timing,
+            options: options.clone(),
             issued,
         })
     }
@@ -342,7 +342,7 @@ impl Pairing {
             self.hello,
             key,
             self.manifest,
-            self.timing,
+            &self.options,
         ))
     }
 
@@ -352,7 +352,7 @@ impl Pairing {
             let answer = match next_frame(&mut self.socket, deadline).await {
                 Err(Error::TimedOut) => {
                     // Closing takes the prompt off the screen.
-                    let _ = timeout(self.timing.connect, self.socket.close(None)).await;
+                    let _ = timeout(self.options.timing.connect, self.socket.close(None)).await;
                     return Err(Error::PairingTimedOut);
                 }
                 other => other?,

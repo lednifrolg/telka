@@ -45,7 +45,7 @@ struct Inner {
     endpoint: Endpoint,
     hello: Hello,
     paired: Paired,
-    timing: Timing,
+    options: Options,
     closed: watch::Receiver<bool>,
 }
 
@@ -130,7 +130,7 @@ impl Client {
             hello,
             key,
             paired.manifest,
-            options.timing,
+            options,
         ))
     }
 
@@ -152,11 +152,11 @@ impl Client {
         hello: Hello,
         key: ClientKey,
         manifest: Manifest,
-        timing: Timing,
+        options: &Options,
     ) -> Self {
         let (commands, receiver) = mpsc::unbounded_channel();
         let (closed_sender, closed) = watch::channel(false);
-        tokio::spawn(run(socket, receiver, timing, closed_sender));
+        tokio::spawn(run(socket, receiver, options.timing, closed_sender));
         let paired = Paired {
             uuid: hello.uuid.clone(),
             key,
@@ -169,7 +169,7 @@ impl Client {
                 endpoint,
                 hello,
                 paired,
-                timing,
+                options: options.clone(),
                 closed,
             }),
         }
@@ -181,6 +181,10 @@ impl Client {
 
     pub fn endpoint(&self) -> Endpoint {
         self.inner.endpoint
+    }
+
+    pub(crate) fn options(&self) -> &Options {
+        &self.inner.options
     }
 
     /// The TV's identity and the key it accepted: what to store for the next connection.
@@ -288,7 +292,7 @@ impl Client {
         id: String,
         answer: oneshot::Receiver<Result<Value, Error>>,
     ) -> Result<Value, Error> {
-        match timeout(self.inner.timing.request, answer).await {
+        match timeout(self.inner.options.timing.request, answer).await {
             Ok(Ok(result)) => result,
             Ok(Err(_)) => Err(Error::Closed),
             Err(_) => {

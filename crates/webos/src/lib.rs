@@ -8,20 +8,35 @@
 //!
 //! A typical session: pair once with [`Pairing`] while someone accepts the prompt on the TV, and
 //! keep [`Client::paired`]. Later, [`Client::connect_to`] the TV with it, send requests with
-//! [`Client::request`] and follow changes with [`Client::subscribe`].
+//! [`Client::request`] and follow changes with [`Client::subscribe`]. The typed [`Report`]s,
+//! like [`Volume`], are read with [`Client::get`] and followed with [`Client::watch`]; buttons and
+//! the pointer go through a [`Remote`]. A sleeping TV wakes only by [`wake`]; [`discover`] finds
+//! TVs on the network.
 
+mod api;
 mod client;
+mod discover;
 mod error;
 mod frame;
 mod pair;
+mod pointer;
 mod tls;
 mod transport;
+mod wol;
 
+pub use api::{
+    App, ForegroundApp, Input, Inputs, Interfaces, Keyboard, LaunchPoints, LinkStatus, Media,
+    Picture, PowerMode, PowerState, Report, SoundOutput, SoundSettings, SystemInfo, Volume,
+    WakeOnLan, Watch,
+};
 pub use client::{Client, Paired, Subscription};
+pub use discover::{Discovered, discover, find};
 pub use error::Error;
 pub use pair::{ClientKey, Hello, Manifest, Options, PROMPT_WINDOW, Pairing, Timing, hello};
+pub use pointer::{Button, Remote};
 pub use tls::{Fingerprint, LG_TV_CERTIFICATE, ParseFingerprintError, Tls};
 pub use transport::Endpoint;
+pub use wol::{MacAddress, ParseMacError, magic_packet, wake, wake_to};
 
 /// TCP port of the plain WebSocket API. Still open on webOS 6; firmware from 2023 on closes it on
 /// newer models, so [`WSS_PORT`] comes first.
