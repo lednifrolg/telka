@@ -8,7 +8,27 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+anstream.workspace = true
+anstyle.workspace = true
 clap.workspace = true
+clap_complete.workspace = true
+clap_mangen.workspace = true
+jiff.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+toml.workspace = true
+unicode-normalization.workspace = true
+webos.workspace = true
+
+[dev-dependencies]
+futures-util.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["io-util", "process", "rt-multi-thread"] }
+tokio-tungstenite.workspace = true
 
 [lints]
 workspace = true
