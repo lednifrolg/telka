@@ -1,0 +1,17 @@
+---
+source: crates/telka/src/tui/view.rs
+assertion_line: 909
+expression: "screen(&lived_in(), 40, 12)"
+---
+"                                        "
+"                                        "
+"                                        "
+"                                        "
+"                                        "
+"            window too small            "
+"             46 × 16 needed             "
+"                                        "
+"                                        "
+"                                        "
+"                                        "
+"                                        "

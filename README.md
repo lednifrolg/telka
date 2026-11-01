@@ -8,13 +8,15 @@ SSAP API and acts on a real TV that someone may be watching.
 
 ## Status
 
-Early development: the command line is complete; the interactive TUI comes next. Verified live
-on an LG C1 (OLED65C11LB) with webOS 6.5.3.
+Early development: the command line is complete and the interactive TUI works as a remote;
+typing into the TV, the mouse as its pointer, picture settings and animations come next. Verified
+live on an LG C1 (OLED65C11LB) with webOS 6.5.3.
 
 ## Usage
 
 ```sh
 telka pair                  # finds the TV; accept the prompt on the TV with the remote
+telka                       # the interactive TUI
 telka status                # power, what is in front, volume, sound and picture (--json)
 
 telka on | off | toggle     # off by the power button, on over Wi-Fi (Wake-on-LAN)
@@ -38,6 +40,26 @@ unambiguous. A command waits until the TV reports the change, at most a few seco
 `--no-wait` returns once the TV took it. `telka <command> --help` has the details. Shell
 completions and man pages come from the binary: `telka completions bash|zsh|fish` and
 `telka man <dir>`.
+
+The TUI is a remote: arrows, Enter and Backspace go to the TV as its buttons, and letters are
+telka's own actions. It shows what the TV does, live, and every change in the activity pane, from
+telka or from anywhere else; a change telka sent shows at once and gets its ✓ when the TV
+reports it. A TV that is off is looked for every few seconds, and `p` wakes it. The TUI pairs
+with the TV on its first start.
+
+| Key | Does |
+|---|---|
+| `←↑↓→` `⏎` `⌫` | the remote's arrows, OK and back (`Esc` closes what is open first) |
+| `h` `s` | home, the TV's settings |
+| `␣` `,` `.` | pause and play in turn, rewind, fast forward |
+| `+` `-` `m` | volume, mute |
+| `a` `i` | pick an app or an input: type to filter, `⏎` to open |
+| `d` | screen off or on; the sound stays |
+| `p` | wake the TV; when it is on, twice to turn it off |
+| `R` `?` `q` | read everything again, every key, quit |
+
+A click on a button in the remote pane presses it, and the wheel over the volume turns it. In a
+narrow window, `Tab` switches between the TV and the activity.
 
 What the TV allows, learned on the C1: `telka on` wakes it only after it went off by its power
 button, which `telka off` presses, and it takes up to a minute; a toast does not show over an

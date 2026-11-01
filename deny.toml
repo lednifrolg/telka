@@ -5,8 +5,9 @@ all-features = true
 yanked = "deny"
 
 [licenses]
-# ISC and BSD-3-Clause come with the rustls TLS stack.
-allow = ["MIT", "Apache-2.0", "Unicode-3.0", "ISC", "BSD-3-Clause"]
+# ISC and BSD-3-Clause come with the rustls TLS stack, Zlib with foldhash (hashbrown's default
+# hasher, through ratatui).
+allow = ["MIT", "Apache-2.0", "Unicode-3.0", "ISC", "BSD-3-Clause", "Zlib"]
 confidence-threshold = 0.93
 
 [bans]
@@ -14,6 +15,9 @@ multiple-versions = "warn"
 wildcards = "deny"
 # Path dependencies between the unpublished workspace crates carry no version.
 allow-wildcard-paths = true
+skip = [
+    { crate = "syn@2.0.119", reason = "crossterm builds derive_more on syn 2, clap moved to syn 3" },
+]
 
 [sources]
 unknown-registry = "deny"
