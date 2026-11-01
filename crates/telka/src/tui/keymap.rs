@@ -23,6 +23,13 @@ pub enum Action {
     Buttons,
     /// The line that types into the TV.
     Type,
+    /// OLED light, by a step.
+    LightUp,
+    LightDown,
+    /// Energy saving, the next level.
+    Energy,
+    /// The picture mode, picked by name.
+    Modes,
     /// The panel off or on; the sound stays.
     Screen,
     /// Wakes a TV that is off; turns it off on the second press.
@@ -198,6 +205,28 @@ pub const BINDINGS: &[Binding] = &[
         rank: u8::MAX,
         codes: &[Char('t')],
         action: Action::Type,
+    },
+    Binding {
+        keys: "[ ]  e",
+        short: "[ ]",
+        help: "OLED light ±5, energy saving; needs the signed pairing",
+        label: "light",
+        hint: Hint::Never,
+        rank: u8::MAX,
+        codes: &[Char(']')],
+        action: Action::LightUp,
+    },
+    also(&[Char('[')], Action::LightDown),
+    also(&[Char('e')], Action::Energy),
+    Binding {
+        keys: "v",
+        short: "v",
+        help: "the picture mode; the TV does not tell it, telka shows its own",
+        label: "mode",
+        hint: Hint::Never,
+        rank: u8::MAX,
+        codes: &[Char('v')],
+        action: Action::Modes,
     },
     Binding {
         keys: "d",

@@ -27,10 +27,12 @@ webos.workspace = true
 [dev-dependencies]
 futures-util.workspace = true
 insta.workspace = true
+portable-pty.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["io-util", "process", "rt-multi-thread"] }
 tokio-tungstenite.workspace = true
+vt100.workspace = true
 
 [lints]
 workspace = true

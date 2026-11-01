@@ -10,7 +10,7 @@ mod view;
 
 use std::io::{self, IsTerminal};
 use std::net::IpAddr;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
@@ -21,6 +21,7 @@ use ratatui::crossterm::event::{
 };
 use ratatui::crossterm::execute;
 use ratatui::layout::Position;
+use serde_json::{Value, json};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use webos::{
@@ -38,9 +39,14 @@ use crate::store::Paired;
 use model::{Change, Effect, Failure, Model, Msg, PairingMsg, Pointer, Snapshot, Start};
 use view::{Hotspot, Target};
 
-/// How often the clock and the countdowns are updated, and how often while a spinner turns.
+/// How often the clock and the countdowns are updated, and how often while a spinner turns or
+/// something flashes.
 const TICK: Duration = Duration::from_secs(1);
 const SPINNER: Duration = Duration::from_millis(100);
+/// How long, and how often, picture settings are read back after a change: the TV shows them
+/// in its answers a moment later.
+const READ_BACK: Duration = Duration::from_secs(3);
+const READ_EVERY: Duration = Duration::from_millis(300);
 
 /// What reaches the event loop.
 enum Incoming {
@@ -61,6 +67,7 @@ pub async fn run(paths: Paths) -> Result<(), AppError> {
     let (mut model, effects) = Model::start(Start {
         now: Timestamp::now(),
         tz: TimeZone::system(),
+        animations: config.animations(),
     });
     let mut terminal = ratatui::init();
     let result = match execute!(io::stdout(), EnableMouseCapture) {
@@ -88,11 +95,20 @@ enum RemoteInput {
     Pointer(Pointer),
 }
 
+/// A picture setting on its way, for one activity entry.
+#[derive(Debug)]
+struct Setting {
+    key: &'static str,
+    value: String,
+    entry: u64,
+}
+
 /// The connection and what keeps working on it.
 struct Session {
     client: Client,
     remote: mpsc::UnboundedSender<RemoteInput>,
     volume: watch::Sender<Option<u8>>,
+    picture: mpsc::UnboundedSender<Setting>,
     workers: Vec<JoinHandle<()>>,
 }
 
@@ -160,7 +176,11 @@ async fn event_loop(
         terminal
             .draw(|frame| hotspots = view::render(model, frame))
             .map_err(|e| AppError::io("terminal", e))?;
-        let wait = if model.spinning() { SPINNER } else { TICK };
+        let wait = if model.spinning() || model.animating() {
+            SPINNER
+        } else {
+            TICK
+        };
         let first = tokio::select! {
             Some(incoming) = rx.recv() => incoming,
             () = tokio::time::sleep(wait) => Incoming::Msg(Box::new(Msg::Tick(Timestamp::now()))),
@@ -300,7 +320,7 @@ fn read_input(tx: mpsc::UnboundedSender<Incoming>) {
 }
 
 impl Runner<'_> {
-    fn report(&self) -> impl Fn(Msg) + Send + 'static {
+    fn report(&self) -> impl Fn(Msg) + Clone + Send + Sync + 'static {
         let tx = self.tx.clone();
         // The receiver is gone only when the TUI has quit.
         move |msg| {
@@ -311,14 +331,22 @@ impl Runner<'_> {
     fn start_session(&mut self, client: Client) {
         let (remote, inputs) = mpsc::unbounded_channel();
         let (volume, levels) = watch::channel(None);
+        let (picture, settings) = mpsc::unbounded_channel();
         let workers = vec![
             tokio::spawn(use_remote(client.clone(), inputs, self.report())),
             tokio::spawn(set_volume(client.clone(), levels)),
+            tokio::spawn(set_pictures(
+                client.clone(),
+                settings,
+                remote.clone(),
+                self.report(),
+            )),
         ];
         self.session = Some(Session {
             client,
             remote,
             volume,
+            picture,
             workers,
         });
     }
@@ -391,6 +419,15 @@ impl Runner<'_> {
                     session.volume.send_replace(Some(level));
                 }
             }
+            Effect::Picture { key, value, entry } => match &self.session {
+                Some(session) => {
+                    let _ = session.picture.send(Setting { key, value, entry });
+                }
+                None => self.report()(Msg::Done {
+                    entry,
+                    result: Err("not connected".into()),
+                }),
+            },
             Effect::Mute { muted, entry } => {
                 self.request(
                     entry,
@@ -497,6 +534,101 @@ async fn set_volume(client: Client, mut levels: watch::Receiver<Option<u8>>) {
     }
 }
 
+/// Changes picture settings one at a time, in order, and reads each back until the next one
+/// goes out. A newer value for the same entry replaces one still waiting, so quick steps of the
+/// OLED light make one change.
+async fn set_pictures(
+    client: Client,
+    mut settings: mpsc::UnboundedReceiver<Setting>,
+    remote: mpsc::UnboundedSender<RemoteInput>,
+    report: impl Fn(Msg) + Clone + Send + Sync + 'static,
+) {
+    let mut reading: Option<JoinHandle<()>> = None;
+    while let Some(first) = settings.recv().await {
+        let mut queue = vec![first];
+        while let Ok(next) = settings.try_recv() {
+            queue.retain(|queued| (queued.key, queued.entry) != (next.key, next.entry));
+            queue.push(next);
+        }
+        for Setting { key, value, entry } in queue {
+            if let Some(reading) = reading.take() {
+                reading.abort();
+            }
+            let change = json!({ key: &value });
+            if set_picture(&client, change, entry, &remote, &report).await {
+                let client = client.clone();
+                let report = report.clone();
+                reading = Some(tokio::spawn(async move {
+                    read_back(&client, &report, |picture| shows(picture, key, &value)).await;
+                }));
+            }
+        }
+    }
+}
+
+/// Whether the TV reports `key` at `value`. It does not tell its picture mode, so that is read
+/// for the settings that follow the mode.
+fn shows(picture: &Picture, key: &str, value: &str) -> bool {
+    match key {
+        "backlight" => picture.backlight.map(|level| level.to_string()).as_deref() == Some(value),
+        "energySaving" => picture.energy_saving.as_deref() == Some(value),
+        _ => false,
+    }
+}
+
+/// Changes picture settings through the alert, and presses OK when the alert stays on the TV,
+/// which closes it and makes the change. Whether the change is on its way.
+async fn set_picture(
+    client: &Client,
+    settings: Value,
+    entry: u64,
+    remote: &mpsc::UnboundedSender<RemoteInput>,
+    report: &impl Fn(Msg),
+) -> bool {
+    match client.set_system_settings("picture", settings).await {
+        Ok(()) => {
+            report(Msg::Done {
+                entry,
+                result: Ok(()),
+            });
+            true
+        }
+        Err(webos::Error::AlertOpen) => {
+            let _ = remote.send(RemoteInput::Button(Button::ENTER));
+            report(Msg::Stuck { entry });
+            true
+        }
+        Err(error) => {
+            report(Msg::Done {
+                entry,
+                result: Err(error.to_string()),
+            });
+            false
+        }
+    }
+}
+
+/// Reads the picture settings until `wanted` sees the change, or for [`READ_BACK`], and reports
+/// each new reading.
+async fn read_back(client: &Client, report: &impl Fn(Msg), wanted: impl Fn(&Picture) -> bool) {
+    let deadline = Instant::now() + READ_BACK;
+    let mut last = None;
+    while Instant::now() < deadline {
+        tokio::time::sleep(READ_EVERY).await;
+        let Ok(picture) = client.get::<Picture>().await else {
+            return;
+        };
+        let seen = wanted(&picture);
+        if last.as_ref() != Some(&picture) {
+            last = Some(picture.clone());
+            report(Msg::Changed(Change::Picture(picture)));
+        }
+        if seen {
+            return;
+        }
+    }
+}
+
 /// Connects after `after`, reads the TV, then reports its changes until the connection ends.
 async fn follow(
     paths: Paths,
@@ -510,7 +642,7 @@ async fn follow(
     tokio::time::sleep(after).await;
     let config = Config {
         tv: fixed,
-        pointer_speed: None,
+        ..Config::default()
     };
     let tv = match Tv::connect(&paths, &config).await {
         Ok(tv) => tv,

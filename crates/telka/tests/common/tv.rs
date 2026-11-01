@@ -50,8 +50,10 @@ pub struct State {
     pub wake_on_lan: bool,
     /// Takes changes without doing them, to test unconfirmed changes.
     pub ignores_changes: bool,
-    /// Never closes alerts, like one stuck on screen.
+    /// Never closes alerts, like one stuck on screen; OK on the remote closes it.
     pub alerts_stick: bool,
+    /// What the alert on screen calls when it closes.
+    pub alert: Option<Value>,
     /// Every frame telka sent, in order.
     pub frames: Vec<Value>,
     /// Buttons pressed on the input socket.
@@ -80,6 +82,7 @@ impl Default for State {
             wake_on_lan: true,
             ignores_changes: false,
             alerts_stick: false,
+            alert: None,
             frames: Vec::new(),
             buttons: Vec::new(),
             toasts: Vec::new(),
@@ -347,6 +350,13 @@ impl FakeTv {
             return;
         };
         self.state().buttons.push(name.clone());
+        if name == "ENTER" {
+            let alert = self.state().alert.take();
+            if let Some(onclose) = alert {
+                self.close_alert(&onclose);
+            }
+            return;
+        }
         if name != "POWER" {
             return;
         }
@@ -430,39 +440,39 @@ impl FakeTv {
             }
             "media.controls/play" | "media.controls/pause" | "media.controls/stop" => Ok(done),
             "system.notifications/createAlert" => {
-                let alert = json!({"type": "alert", "onclose": payload["onclose"]});
-                self.state().frames.push(alert);
+                self.state().alert = Some(payload["onclose"].clone());
                 Ok(json!({"returnValue": true, "alertId": "alert-1"}))
             }
             "system.notifications/closeAlert" => {
-                let onclose = self
-                    .state()
-                    .frames
-                    .iter()
-                    .rev()
-                    .find(|frame| frame["type"] == "alert")
-                    .map(|frame| frame["onclose"].clone())
-                    .unwrap_or_default();
-                if onclose["uri"] == "luna://com.webos.settingsservice/setSystemSettings"
-                    && onclose["params"]["category"] == "picture"
-                {
-                    let settings = onclose["params"]["settings"].clone();
-                    self.change(|state| {
-                        if let Some(light) = settings["backlight"].as_str() {
-                            state.backlight = light.parse().unwrap();
-                        }
-                        if let Some(energy) = settings["energySaving"].as_str() {
-                            energy.clone_into(&mut state.energy);
-                        }
-                        if let Some(mode) = settings["pictureMode"].as_str() {
-                            mode.clone_into(&mut state.picture_mode);
-                        }
-                    });
+                let alert = self.state().alert.take();
+                if let Some(onclose) = alert {
+                    self.close_alert(&onclose);
                 }
                 Ok(done)
             }
             _ => self.answer(uri, payload),
         }
+    }
+
+    /// Makes the call of an alert that closes: picture settings, here.
+    fn close_alert(&self, onclose: &Value) {
+        if onclose["uri"] != "luna://com.webos.settingsservice/setSystemSettings"
+            || onclose["params"]["category"] != "picture"
+        {
+            return;
+        }
+        let settings = &onclose["params"]["settings"];
+        self.change(|state| {
+            if let Some(light) = settings["backlight"].as_str() {
+                state.backlight = light.parse().unwrap();
+            }
+            if let Some(energy) = settings["energySaving"].as_str() {
+                energy.clone_into(&mut state.energy);
+            }
+            if let Some(mode) = settings["pictureMode"].as_str() {
+                mode.clone_into(&mut state.picture_mode);
+            }
+        });
     }
 
     /// What the TV answers for state it reports.

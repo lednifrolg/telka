@@ -8,9 +8,9 @@ SSAP API and acts on a real TV that someone may be watching.
 
 ## Status
 
-Early development: the command line is complete and the interactive TUI works as a remote,
-with typing into the TV and the mouse as its pointer; picture settings and animations come next. Verified
-live on an LG C1 (OLED65C11LB) with webOS 6.5.3.
+Early development: the command line and the interactive TUI are complete, with typing into the
+TV, the mouse as its pointer and the picture settings. Verified live on an LG C1 (OLED65C11LB)
+with webOS 6.5.3.
 
 ## Usage
 
@@ -56,6 +56,8 @@ with the TV on its first start.
 | `a` `i` | pick an app or an input: type to filter, `⏎` to open |
 | `k` | any other button of the remote by name: info, guide, colors, numbers, … |
 | `t` | type into the TV: letters go out as you type, `⏎` is Enter on the TV |
+| `[` `]` `e` | OLED light by 5, energy saving to the next level |
+| `v` | pick the picture mode |
 | `d` | screen off or on; the sound stays |
 | `p` | wake the TV; when it is on, twice to turn it off |
 | `R` `?` `q` | read everything again, every key, quit |
@@ -65,6 +67,11 @@ with the TV's own keyboard take it. In the remote pane, a click on a button pres
 elsewhere the mouse is the TV's pointer: a drag moves it, a click clicks, the wheel scrolls. The
 wheel over the volume turns it. In a narrow window, `Tab` switches between the TV and the
 activity.
+
+Picture settings go through an alert that the TV runs and closes at once, unseen; telka then
+reads them back. When the alert stays on the TV, telka presses OK, which closes it and makes the
+change, and marks the change with ⚠. The TV does not tell its picture mode, so the TUI shows the
+one telka set.
 
 What the TV allows, learned on the C1: `telka on` wakes it only after it went off by its power
 button, which `telka off` presses, and it takes up to a minute; a toast does not show over an
@@ -87,6 +94,7 @@ sends Wake-on-LAN, which needs "Turn on via Wi-Fi" in the TV's settings.
 ```toml
 tv = "192.168.1.30"   # a fixed address: telka never looks for the TV on the network
 pointer_speed = 12    # pixels on the TV per column a drag moves the pointer
+animations = false    # no lit buttons, flashing changes or running bars in the TUI
 ```
 
 `TELKA_HOME` puts config and state in one directory.
@@ -117,8 +125,9 @@ pointer_speed = 12    # pixels on the TV per column a drag moves the pointer
 
 Test data in `crates/webos/tests/data` is synthetic: one SSAP frame per file, written by hand.
 Tests run against fake TVs on the loopback interface: the CLI tests run the binary against one
-that `TELKA_TV_URL` points at. Never commit captured TV responses, keys or
-real device identifiers. Code, docs and commit messages are in English.
+that `TELKA_TV_URL` points at, and the TUI tests run it in a pseudo-terminal, press keys and read
+the screen. Never commit captured TV responses, keys or real device identifiers. Code, docs and
+commit messages are in English.
 
 `cargo run -p webos --example probe` talks to a real TV for live checks: `hello`, `pair`,
 `capture` (read-only frames for comparing the synthetic data, kept out of the repository),
