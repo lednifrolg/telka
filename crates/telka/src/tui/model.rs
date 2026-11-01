@@ -28,6 +28,12 @@ const ARMED: SignedDuration = SignedDuration::from_secs(3);
 /// Volume steps this close together change one activity line.
 const FOLD: SignedDuration = SignedDuration::from_secs(1);
 const NOTICE: SignedDuration = SignedDuration::from_secs(3);
+/// How long a pressed button lights up, how long a change from elsewhere flashes, and how long
+/// a bar takes to run to its new value.
+const PRESSED: SignedDuration = SignedDuration::from_millis(450);
+const FLASH: SignedDuration = SignedDuration::from_millis(1400);
+const GLIDE: SignedDuration = SignedDuration::from_millis(300);
+const LIGHT_STEP: i16 = 5;
 const ACTIVITY: usize = 50;
 const SENT: usize = 10;
 
@@ -58,6 +64,8 @@ pub enum Change {
     Output(String),
     /// A text field on the TV got or lost focus.
     Keyboard(Keyboard),
+    /// The picture settings, read back after telka changed them.
+    Picture(Picture),
 }
 
 /// What the mouse does with the TV's pointer.
@@ -123,6 +131,10 @@ pub enum Msg {
         entry: u64,
         result: Result<(), String>,
     },
+    /// The alert that carried a picture change stayed on the TV, and telka pressed OK.
+    Stuck {
+        entry: u64,
+    },
     Woke(Result<(), String>),
     Pairing(PairingMsg),
 }
@@ -143,6 +155,13 @@ pub enum Effect {
     Enter,
     /// The latest wanted volume: older ones still on their way are dropped.
     Volume(u8),
+    /// A picture setting through the alert, like `backlight`; a newer value for the same entry
+    /// replaces one still on its way.
+    Picture {
+        key: &'static str,
+        value: String,
+        entry: u64,
+    },
     Mute {
         muted: bool,
         entry: u64,
@@ -220,6 +239,7 @@ pub enum PickerKind {
     Inputs,
     /// Every button of the remote.
     Buttons,
+    Modes,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -284,6 +304,62 @@ pub struct Entry {
     pub status: Status,
 }
 
+/// A bar that runs to its new value instead of jumping there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Glide {
+    from: u8,
+    to: u8,
+    since: Timestamp,
+}
+
+impl Glide {
+    fn still(level: u8, now: Timestamp) -> Self {
+        Self {
+            from: level,
+            to: level,
+            since: now,
+        }
+    }
+
+    /// Heads for `to` from where the bar is now; jumps there without animations.
+    fn head(&mut self, to: u8, now: Timestamp, animations: bool) {
+        if to != self.to {
+            *self = Self {
+                from: if animations { self.at(now) } else { to },
+                to,
+                since: now,
+            };
+        }
+    }
+
+    /// Where the bar is at `now`: fast at first, slow at the end.
+    pub fn at(&self, now: Timestamp) -> u8 {
+        let done = now.duration_since(self.since).as_secs_f64() / GLIDE.as_secs_f64();
+        if done >= 1.0 {
+            return self.to;
+        }
+        let eased = 1.0 - (1.0 - done.max(0.0)).powi(2);
+        let at = f64::from(self.from) + (f64::from(self.to) - f64::from(self.from)) * eased;
+        // Between two u8 values.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let at = at.round() as u8;
+        at
+    }
+
+    fn moving(&self, now: Timestamp) -> bool {
+        self.from != self.to && now < self.since + GLIDE
+    }
+
+    /// Follows `level` from `bar`; a bar that appears does not run.
+    fn follow(bar: &mut Option<Self>, level: Option<u8>, now: Timestamp, animations: bool) {
+        match (bar.as_mut(), level) {
+            (_, None) => *bar = None,
+            (None, Some(level)) => *bar = Some(Self::still(level, now)),
+            (Some(glide), Some(level)) => glide.head(level, now, animations),
+        }
+    }
+}
+
 /// What a change telka sent should look like when the TV reports it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Expect {
@@ -293,6 +369,8 @@ enum Expect {
     Screen(bool),
     Off,
     On,
+    Light(u8),
+    Energy(String),
 }
 
 #[derive(Debug, Clone)]
@@ -312,6 +390,7 @@ pub struct Notice {
 pub struct Start {
     pub now: Timestamp,
     pub tz: TimeZone,
+    pub animations: bool,
 }
 
 pub struct Model {
@@ -335,6 +414,13 @@ pub struct Model {
     pub notice: Option<Notice>,
     off_armed: Option<Timestamp>,
     next_play: Button,
+    /// The picture mode telka set: the TV does not tell it.
+    pub picture_mode: Option<String>,
+    /// The action whose button lights up, until when.
+    pressed: Option<(Action, Timestamp)>,
+    pub volume_bar: Option<Glide>,
+    pub light_bar: Option<Glide>,
+    animations: bool,
     pub quit: bool,
 }
 
@@ -356,6 +442,11 @@ impl Model {
             notice: None,
             off_armed: None,
             next_play: Button::PAUSE,
+            picture_mode: None,
+            pressed: None,
+            volume_bar: None,
+            light_bar: None,
+            animations: start.animations,
             quit: false,
         };
         (
@@ -375,6 +466,51 @@ impl Model {
                     | Phase::Waking { .. }
                     | Phase::Pairing(Dialog::Searching { .. } | Dialog::Prompt { .. })
             )
+    }
+
+    /// Whether something moves, so frames come faster.
+    pub fn animating(&self) -> bool {
+        let moving = |bar: Option<Glide>| bar.is_some_and(|bar| bar.moving(self.now));
+        self.animations
+            && (self.pressed.is_some_and(|(_, until)| until > self.now)
+                || self.activity.iter().any(|entry| self.flashing(entry))
+                || moving(self.volume_bar)
+                || moving(self.light_bar))
+    }
+
+    /// Whether a change from elsewhere still flashes.
+    pub fn flashing(&self, entry: &Entry) -> bool {
+        self.animations && entry.origin == Origin::Remote && entry.at + FLASH > self.now
+    }
+
+    /// Whether the button for `action` lights up.
+    pub fn lit(&self, action: Action) -> bool {
+        self.animations
+            && self
+                .pressed
+                .is_some_and(|(pressed, until)| pressed == action && until > self.now)
+    }
+
+    /// The OLED light as shown: what telka asked for while the TV has not reported it yet.
+    pub fn shown_light(&self) -> Option<u8> {
+        self.pending
+            .iter()
+            .find_map(|pending| match pending.expect {
+                Expect::Light(level) => Some(level),
+                _ => None,
+            })
+            .or_else(|| self.tv.as_ref()?.picture.as_ref()?.backlight)
+    }
+
+    /// Energy saving as shown, the same way.
+    pub fn shown_energy(&self) -> Option<String> {
+        self.pending
+            .iter()
+            .find_map(|pending| match &pending.expect {
+                Expect::Energy(level) => Some(level.clone()),
+                _ => None,
+            })
+            .or_else(|| self.tv.as_ref()?.picture.as_ref()?.energy_saving.clone())
     }
 
     /// The volume as shown: what telka asked for while the TV has not reported it yet.
@@ -414,6 +550,16 @@ impl Model {
     }
 
     pub fn update(&mut self, msg: Msg) -> Vec<Effect> {
+        let effects = self.handle(msg);
+        let (now, animations) = (self.now, self.animations);
+        let volume = self.shown_volume().map(|(level, _)| level);
+        Glide::follow(&mut self.volume_bar, volume, now, animations);
+        let light = self.shown_light();
+        Glide::follow(&mut self.light_bar, light, now, animations);
+        effects
+    }
+
+    fn handle(&mut self, msg: Msg) -> Vec<Effect> {
         match msg {
             Msg::Tick(now) => {
                 self.tick(now);
@@ -453,9 +599,36 @@ impl Model {
                 Vec::new()
             }
             Msg::Lost => self.lost(),
+            Msg::Stuck { entry } => {
+                // OK makes the change, so it is still waited for, with time for the TV to show it.
+                let until = self.now + CHANGE;
+                for pending in self
+                    .pending
+                    .iter_mut()
+                    .filter(|pending| pending.entry == entry)
+                {
+                    pending.until = until;
+                }
+                self.settle_entry(
+                    entry,
+                    Status::Warn("the alert stayed on the TV; telka pressed OK".into()),
+                );
+                Vec::new()
+            }
             Msg::Done { entry, result } => {
-                if let Err(message) = result {
-                    self.settle(entry, Status::Failed(message));
+                match result {
+                    Err(message) => self.settle(entry, Status::Failed(message)),
+                    // Nothing to wait for, like a picture mode: done once the TV took it.
+                    Ok(()) if !self.pending.iter().any(|pending| pending.entry == entry) => {
+                        let at = self
+                            .activity
+                            .iter()
+                            .find(|found| found.id == entry)
+                            .map(|found| found.at);
+                        let took = at.map(|at| self.now.duration_since(at));
+                        self.settle_entry(entry, Status::Done(took));
+                    }
+                    Ok(()) => {}
                 }
                 Vec::new()
             }
@@ -479,10 +652,12 @@ impl Model {
             .partition(|pending| pending.until <= now);
         self.pending = waiting;
         for pending in expired {
-            self.settle_entry(
-                pending.entry,
-                Status::Warn("the TV did not report it".into()),
-            );
+            if !self.warned(pending.entry) {
+                self.settle_entry(
+                    pending.entry,
+                    Status::Warn("the TV did not report it".into()),
+                );
+            }
         }
         if self
             .notice
@@ -580,6 +755,7 @@ impl Model {
     }
 
     fn live(&mut self, action: Action) -> Vec<Effect> {
+        self.pressed = Some((action, self.now + PRESSED));
         match action {
             Action::Press(button) => self.press(button),
             Action::Back => self.press(Button::BACK),
@@ -604,6 +780,19 @@ impl Model {
                     muted: !muted,
                     entry,
                 }]
+            }
+            Action::LightUp => self.light(LIGHT_STEP),
+            Action::LightDown => self.light(-LIGHT_STEP),
+            Action::Energy => self.energy(),
+            Action::Modes => {
+                if self.signed() {
+                    self.overlay = Overlay::Picker(Picker {
+                        kind: PickerKind::Modes,
+                        filter: String::new(),
+                        selected: 0,
+                    });
+                }
+                Vec::new()
             }
             Action::Type => {
                 self.overlay = Overlay::Text(TextLine {
@@ -658,6 +847,102 @@ impl Model {
             }
             Action::Quit | Action::Help | Action::NextTab | Action::Tab(_) => Vec::new(),
         }
+    }
+
+    /// Whether picture settings can change; tells why not.
+    fn signed(&mut self) -> bool {
+        let signed = self.tv.as_ref().is_some_and(|tv| tv.signed);
+        if !signed {
+            self.notice("picture settings need a pairing with LG's signed manifest");
+        }
+        signed
+    }
+
+    /// Energy saving, the next level after the one the TV reports.
+    fn energy(&mut self) -> Vec<Effect> {
+        if !self.signed() {
+            return Vec::new();
+        }
+        let levels = crate::control::ENERGY_SAVING;
+        let next = self
+            .shown_energy()
+            .and_then(|now| levels.iter().position(|level| *level == now))
+            .map_or(levels[0], |index| levels[(index + 1) % levels.len()]);
+        let text = format!("energy saving {next}");
+        let folded = self.fold(
+            |expect| matches!(expect, Expect::Energy(_)),
+            Expect::Energy(next.to_owned()),
+            |_| text.clone(),
+        );
+        let entry = match folded {
+            Some(entry) => entry,
+            None => self.expect("picture", text, Expect::Energy(next.to_owned()), CHANGE),
+        };
+        vec![Effect::Picture {
+            key: "energySaving",
+            value: next.to_owned(),
+            entry,
+        }]
+    }
+
+    fn light(&mut self, step: i16) -> Vec<Effect> {
+        if !self.signed() {
+            return Vec::new();
+        }
+        let Some(level) = self.shown_light() else {
+            return Vec::new();
+        };
+        let target = u8::try_from((i16::from(level) + step).clamp(0, 100)).unwrap_or(level);
+        let folded = self.fold(
+            |expect| matches!(expect, Expect::Light(_)),
+            Expect::Light(target),
+            |text| {
+                let from = text.split(" → ").next().unwrap_or_default();
+                format!("{from} → {target}")
+            },
+        );
+        let entry = match folded {
+            Some(entry) => entry,
+            None => self.expect(
+                "picture",
+                format!("OLED light {level} → {target}"),
+                Expect::Light(target),
+                CHANGE,
+            ),
+        };
+        vec![Effect::Picture {
+            key: "backlight",
+            value: target.to_string(),
+            entry,
+        }]
+    }
+
+    /// Folds a change into the one of its kind still on its way, unless that one went wrong:
+    /// it now heads for `expect`, and its line reads `text` of the old one. Its entry.
+    fn fold(
+        &mut self,
+        kind: impl Fn(&Expect) -> bool,
+        expect: Expect,
+        text: impl FnOnce(&str) -> String,
+    ) -> Option<u64> {
+        let warned: Vec<u64> = self
+            .activity
+            .iter()
+            .filter(|entry| matches!(entry.status, Status::Warn(_)))
+            .map(|entry| entry.id)
+            .collect();
+        let until = self.now + CHANGE;
+        let pending = self
+            .pending
+            .iter_mut()
+            .find(|pending| kind(&pending.expect) && !warned.contains(&pending.entry))?;
+        pending.expect = expect;
+        pending.until = until;
+        let id = pending.entry;
+        if let Some(entry) = self.activity.iter_mut().find(|entry| entry.id == id) {
+            entry.text = text(&entry.text);
+        }
+        Some(id)
     }
 
     fn press(&mut self, button: Button) -> Vec<Effect> {
@@ -795,6 +1080,15 @@ impl Model {
         };
         let wanted = fold(&picker.filter);
         let all: Vec<Choice> = match picker.kind {
+            PickerKind::Modes => crate::control::PICTURE_MODES
+                .iter()
+                .map(|mode| Choice {
+                    id: (*mode).to_owned(),
+                    title: (*mode).to_owned(),
+                    detail: String::new(),
+                    current: self.picture_mode.as_deref() == Some(*mode),
+                })
+                .collect(),
             PickerKind::Buttons => Button::all()
                 .map(|button| Choice {
                     id: button.name().to_owned(),
@@ -838,6 +1132,19 @@ impl Model {
 
     fn choose(&mut self, kind: PickerKind, choice: Choice) -> Vec<Effect> {
         match kind {
+            PickerKind::Modes => {
+                self.picture_mode = Some(choice.id.clone());
+                let entry = self.log(
+                    "picture",
+                    format!("picture mode {}", choice.id),
+                    Status::Waiting,
+                );
+                vec![Effect::Picture {
+                    key: "pictureMode",
+                    value: choice.id,
+                    entry,
+                }]
+            }
             PickerKind::Buttons => Button::from_name(&choice.id)
                 .map(|button| self.press(button))
                 .unwrap_or_default(),
@@ -971,31 +1278,7 @@ impl Model {
         match change {
             Change::Volume(volume) => {
                 let before = tv.volume.replace(volume.clone());
-                let mut told = false;
-                if let Some(pending) = self.take(|expect| *expect == Expect::Volume(volume.level)) {
-                    self.done(&pending);
-                    told = true;
-                }
-                if let Some(pending) = self.take(|expect| *expect == Expect::Muted(volume.muted)) {
-                    self.done(&pending);
-                    told = true;
-                }
-                let ours = self
-                    .pending
-                    .iter()
-                    .any(|pending| matches!(pending.expect, Expect::Volume(_) | Expect::Muted(_)));
-                if told || ours {
-                    return;
-                }
-                if let Some(before) = before {
-                    if before.level != volume.level {
-                        self.log_change("volume", format!("{} → {}", before.level, volume.level));
-                    }
-                    if before.muted != volume.muted {
-                        let text = if volume.muted { "muted" } else { "unmuted" };
-                        self.log_change("volume", text.into());
-                    }
-                }
+                self.volume_changed(before, &volume);
             }
             Change::App(app) => {
                 let before = std::mem::replace(&mut tv.app, app.clone());
@@ -1031,6 +1314,18 @@ impl Model {
                     self.log_change("power", format!("{before} → {after}"));
                 }
             }
+            Change::Picture(picture) => {
+                let (light, energy) = (picture.backlight, picture.energy_saving.clone());
+                tv.picture = Some(picture);
+                let seen = |expect: &Expect| match expect {
+                    Expect::Light(level) => light == Some(*level),
+                    Expect::Energy(level) => energy.as_ref() == Some(level),
+                    _ => false,
+                };
+                while let Some(pending) = self.take(seen) {
+                    self.done(&pending);
+                }
+            }
             Change::Keyboard(keyboard) => {
                 if keyboard.focused && self.overlay == Overlay::None {
                     self.overlay = Overlay::Text(TextLine {
@@ -1052,6 +1347,35 @@ impl Model {
                     };
                     self.log_change("sound", text);
                 }
+            }
+        }
+    }
+
+    /// Settles what telka waited for, or tells about a change from elsewhere.
+    fn volume_changed(&mut self, before: Option<webos::Volume>, volume: &webos::Volume) {
+        let mut told = false;
+        if let Some(pending) = self.take(|expect| *expect == Expect::Volume(volume.level)) {
+            self.done(&pending);
+            told = true;
+        }
+        if let Some(pending) = self.take(|expect| *expect == Expect::Muted(volume.muted)) {
+            self.done(&pending);
+            told = true;
+        }
+        let ours = self
+            .pending
+            .iter()
+            .any(|pending| matches!(pending.expect, Expect::Volume(_) | Expect::Muted(_)));
+        if told || ours {
+            return;
+        }
+        if let Some(before) = before {
+            if before.level != volume.level {
+                self.log_change("volume", format!("{} → {}", before.level, volume.level));
+            }
+            if before.muted != volume.muted {
+                let text = if volume.muted { "muted" } else { "unmuted" };
+                self.log_change("volume", text.into());
             }
         }
     }
@@ -1129,9 +1453,19 @@ impl Model {
         Some(self.pending.remove(index))
     }
 
+    /// Settles what the TV showed; a warning stays, since something went wrong on the way.
     fn done(&mut self, pending: &Pending) {
+        if self.warned(pending.entry) {
+            return;
+        }
         let took = self.now.duration_since(pending.since);
         self.settle_entry(pending.entry, Status::Done(Some(took)));
+    }
+
+    fn warned(&self, entry: u64) -> bool {
+        self.activity
+            .iter()
+            .any(|found| found.id == entry && matches!(found.status, Status::Warn(_)))
     }
 
     /// Settles an entry and forgets what it waited for.
@@ -1181,6 +1515,7 @@ pub mod tests {
         Start {
             now: now(),
             tz: TimeZone::UTC,
+            animations: true,
         }
     }
 
@@ -1519,5 +1854,217 @@ pub mod tests {
             &model.phase,
             Phase::Pairing(Dialog::Searching { reason: Some(_) })
         ));
+    }
+
+    fn picture(light: u8, energy: &str) -> Msg {
+        Msg::Changed(Change::Picture(
+            Picture::read(&json!({"settings": {"backlight": light.to_string(),
+                "energySaving": energy}}))
+            .unwrap(),
+        ))
+    }
+
+    #[test]
+    fn light_steps_fold_into_one_line_and_are_read_back() {
+        let mut model = live();
+        let effects = model.update(key(KeyCode::Char(']')));
+        let entry = model.activity[0].id;
+        let light = |level: &str| Effect::Picture {
+            key: "backlight",
+            value: level.into(),
+            entry,
+        };
+        assert_eq!(effects, [light("85")]);
+        later(&mut model, 100);
+        assert_eq!(model.update(key(KeyCode::Char(']'))), [light("90")]);
+        assert_eq!(model.shown_light(), Some(90));
+        assert_eq!(model.activity[0].text, "OLED light 80 → 90");
+        // The alert took it; the TV shows it a moment later.
+        model.update(Msg::Done {
+            entry,
+            result: Ok(()),
+        });
+        assert_eq!(model.activity[0].status, Status::Waiting);
+        model.update(picture(85, "auto"));
+        assert_eq!(model.activity[0].status, Status::Waiting);
+        model.update(picture(90, "auto"));
+        assert!(matches!(model.activity[0].status, Status::Done(Some(_))));
+
+        // Not below 0.
+        model
+            .tv
+            .as_mut()
+            .unwrap()
+            .picture
+            .as_mut()
+            .unwrap()
+            .backlight = Some(3);
+        let effects = model.update(key(KeyCode::Char('[')));
+        assert!(matches!(&effects[..], [Effect::Picture { value, .. }] if value == "0"));
+    }
+
+    #[test]
+    fn energy_saving_goes_round_and_waits_for_the_tv() {
+        let mut model = live();
+        let effects = model.update(key(KeyCode::Char('e')));
+        let entry = model.activity[0].id;
+        assert_eq!(
+            effects,
+            [Effect::Picture {
+                key: "energySaving",
+                value: "off".into(),
+                entry
+            }]
+        );
+        model.update(Msg::Done {
+            entry,
+            result: Ok(()),
+        });
+        assert_eq!(model.activity[0].status, Status::Waiting);
+        model.update(picture(80, "off"));
+        assert!(matches!(model.activity[0].status, Status::Done(Some(_))));
+        model
+            .tv
+            .as_mut()
+            .unwrap()
+            .picture
+            .as_mut()
+            .unwrap()
+            .energy_saving = Some("max".into());
+        let effects = model.update(key(KeyCode::Char('e')));
+        assert!(matches!(&effects[..], [Effect::Picture { value, .. }] if value == "auto"));
+
+        // Quick presses go on from the level on its way, in one line.
+        let mut model = live();
+        model.update(key(KeyCode::Char('e')));
+        let entry = model.activity[0].id;
+        let effects = model.update(key(KeyCode::Char('e')));
+        assert_eq!(
+            effects,
+            [Effect::Picture {
+                key: "energySaving",
+                value: "min".into(),
+                entry
+            }]
+        );
+        assert_eq!(model.activity[0].text, "energy saving min");
+        assert_eq!(model.shown_energy().as_deref(), Some("min"));
+    }
+
+    #[test]
+    fn the_picture_mode_is_picked_and_shown_as_set_by_telka() {
+        let mut model = live();
+        model.update(key(KeyCode::Char('v')));
+        for c in "cin".chars() {
+            model.update(key(KeyCode::Char(c)));
+        }
+        let effects = model.update(key(KeyCode::Enter));
+        let entry = model.activity[0].id;
+        assert_eq!(
+            effects,
+            [Effect::Picture {
+                key: "pictureMode",
+                value: "cinema".into(),
+                entry
+            }]
+        );
+        assert_eq!(model.picture_mode.as_deref(), Some("cinema"));
+        assert_eq!(model.activity[0].text, "picture mode cinema");
+        // Nothing to read back: done once the TV took it.
+        later(&mut model, 400);
+        model.update(Msg::Done {
+            entry,
+            result: Ok(()),
+        });
+        assert!(
+            matches!(model.activity[0].status, Status::Done(Some(took)) if took.as_millis() == 400)
+        );
+        model.update(key(KeyCode::Char('v')));
+        let current: Vec<String> = model
+            .choices()
+            .into_iter()
+            .filter(|choice| choice.current)
+            .map(|choice| choice.id)
+            .collect();
+        assert_eq!(current, ["cinema"]);
+    }
+
+    #[test]
+    fn picture_keys_need_the_signed_pairing_and_a_stuck_alert_warns() {
+        let (mut model, _) = Model::start(start());
+        let mut unsigned = snapshot();
+        unsigned.signed = false;
+        model.update(Msg::Connected(Ok(Box::new(unsigned))));
+        for c in ['[', ']', 'e', 'v'] {
+            assert_eq!(model.update(key(KeyCode::Char(c))), []);
+        }
+        assert_eq!(model.overlay, Overlay::None);
+        assert!(model.notice.as_ref().unwrap().text.contains("signed"));
+
+        let mut model = live();
+        model.update(key(KeyCode::Char(']')));
+        let entry = model.activity[0].id;
+        later(&mut model, 3000);
+        model.update(Msg::Stuck { entry });
+        let stuck = |model: &Model| matches!(&model.activity[0].status, Status::Warn(why) if why.contains("pressed OK"));
+        assert!(stuck(&model));
+        // OK makes the change: the TV shows it a moment later, and the warning stays.
+        later(&mut model, 2000);
+        assert_eq!(model.shown_light(), Some(85));
+        model.update(picture(85, "auto"));
+        assert!(stuck(&model));
+        assert!(!model.spinning());
+    }
+
+    #[test]
+    fn a_pressed_button_lights_up_and_a_change_from_elsewhere_flashes() {
+        let mut model = live();
+        model.update(key(KeyCode::Char('h')));
+        assert!(model.lit(Action::Press(Button::HOME)));
+        assert!(!model.lit(Action::Press(Button::BACK)));
+        assert!(model.animating());
+        later(&mut model, 500);
+        assert!(!model.lit(Action::Press(Button::HOME)));
+        assert!(!model.animating());
+
+        model.update(Msg::Changed(Change::App("netflix".into())));
+        assert!(model.flashing(&model.activity[0]));
+        assert!(model.animating());
+        later(&mut model, 1500);
+        assert!(!model.flashing(&model.activity[0]));
+        assert!(!model.animating());
+    }
+
+    #[test]
+    fn bars_run_to_a_new_value() {
+        let mut model = live();
+        assert_eq!(model.volume_bar.unwrap().at(model.now), 12);
+        model.update(Msg::Changed(volume(32, false)));
+        assert_eq!(model.volume_bar.unwrap().at(model.now), 12);
+        assert!(model.animating());
+        later(&mut model, 150);
+        let halfway = model.volume_bar.unwrap().at(model.now);
+        assert!((20..32).contains(&halfway), "{halfway}");
+        later(&mut model, 200);
+        assert_eq!(model.volume_bar.unwrap().at(model.now), 32);
+        // Still the flash of the change from elsewhere.
+        assert!(model.animating());
+        later(&mut model, 1200);
+        assert!(!model.animating());
+    }
+
+    #[test]
+    fn without_animations_nothing_moves() {
+        let (mut model, _) = Model::start(Start {
+            animations: false,
+            ..start()
+        });
+        model.update(Msg::Connected(Ok(Box::new(snapshot()))));
+        model.update(key(KeyCode::Char('h')));
+        model.update(Msg::Changed(volume(32, false)));
+        assert!(!model.lit(Action::Press(Button::HOME)));
+        assert!(!model.flashing(&model.activity[0]));
+        assert_eq!(model.volume_bar.unwrap().at(model.now), 32);
+        assert!(!model.animating());
     }
 }

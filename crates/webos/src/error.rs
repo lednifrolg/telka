@@ -63,6 +63,10 @@ pub enum Error {
     /// Looking for TVs on the network failed.
     #[error("mDNS discovery failed: {0}")]
     Discovery(String),
+    /// The alert that carried a Luna call did not close and may be on screen; OK on the remote
+    /// closes it, and makes the call.
+    #[error("the TV did not close the alert that carries the call")]
+    AlertOpen,
     /// The TV took the request but could not do it, with its own explanation.
     #[error("the TV could not do it: {message}")]
     Rejected { message: String },

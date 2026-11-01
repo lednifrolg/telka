@@ -420,7 +420,7 @@ pub async fn notify(tv: &Tv, message: &str) -> Result<(), AppError> {
 
 /// The picture modes of a 2021 LG OLED; the TV takes the HDR and Dolby Vision ones for such
 /// content.
-const PICTURE_MODES: &[&str] = &[
+pub const PICTURE_MODES: &[&str] = &[
     "vivid",
     "normal",
     "eco",
@@ -444,7 +444,7 @@ const PICTURE_MODES: &[&str] = &[
     "dolbyHdrGame",
 ];
 
-const ENERGY_SAVING: &[&str] = &["auto", "off", "min", "med", "max"];
+pub const ENERGY_SAVING: &[&str] = &["auto", "off", "min", "med", "max"];
 
 /// The value of `list` that `text` names, in any case.
 fn one_of(text: &str, list: &[&'static str], what: &str) -> Result<&'static str, AppError> {
@@ -503,7 +503,7 @@ pub async fn picture(tv: &Tv, change: PictureChange, json: bool) -> Result<(), A
         .set_system_settings("picture", Value::Object(settings))
         .await
     {
-        Err(webos::Error::TimedOut) => {
+        Err(webos::Error::AlertOpen) => {
             return Err(AppError::NotConfirmed(
                 "the TV did not close the alert that carries the change; if it is on screen, \
                  press OK on the remote"

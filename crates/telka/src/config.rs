@@ -17,9 +17,16 @@ pub struct Config {
     /// How many pixels on the TV a drag of one terminal column moves the pointer; a row moves it
     /// twice as far, since rows are about twice as tall. 12 by default.
     pub pointer_speed: Option<u16>,
+    /// Motion in the TUI: a pressed button lights up, a change from elsewhere flashes in the
+    /// activity. On by default.
+    pub animations: Option<bool>,
 }
 
 impl Config {
+    pub fn animations(&self) -> bool {
+        self.animations.unwrap_or(true)
+    }
+
     pub fn pointer_speed(&self) -> i32 {
         i32::from(self.pointer_speed.unwrap_or(12).clamp(1, 200))
     }
@@ -54,5 +61,12 @@ mod tests {
         );
         fs::write(paths.config_file(), "colour = true\n").unwrap();
         assert!(matches!(load(&paths), Err(AppError::Corrupt { .. })));
+    }
+
+    #[test]
+    fn animations_are_on_unless_turned_off() {
+        assert!(Config::default().animations());
+        let off: Config = toml::from_str("animations = false").unwrap();
+        assert!(!off.animations());
     }
 }

@@ -352,8 +352,9 @@ fn live_lines(
         } else {
             Span::raw(format!("{level:>VALUE$}"))
         };
+        let shown = model.volume_bar.map_or(level, |bar| bar.at(model.now));
         let mut spans = vec![label("volume")];
-        spans.extend(bar(level, max, bar_width, !muted));
+        spans.extend(bar(shown, max, bar_width, !muted));
         spans.push(value);
         spots.push(Hotspot {
             area: Rect::new(area.x, area.y + 2, area.width, 1),
@@ -369,20 +370,28 @@ fn live_lines(
         Span::raw(sound.join(" · ")),
     ]));
     lines.push(Line::default());
-    if let Some(picture) = &tv.picture {
-        if let Some(light) = picture.backlight {
+    if tv.picture.is_some() {
+        if let Some(light) = model.shown_light() {
+            let shown = model.light_bar.map_or(light, |bar| bar.at(model.now));
             let mut spans = vec![label("light")];
-            spans.extend(bar(light, 100, bar_width, true));
+            spans.extend(bar(shown, 100, bar_width, true));
             spans.push(Span::raw(format!("{light:>VALUE$}")));
             lines.push(Line::from(spans));
         }
-        if let Some(energy) = &picture.energy_saving {
-            lines.push(Line::from(vec![label("energy"), Span::raw(energy.clone())]));
+        if let Some(energy) = model.shown_energy() {
+            lines.push(Line::from(vec![label("energy"), Span::raw(energy)]));
         }
-        lines.push(Line::from(vec![
-            label("mode"),
-            Span::styled("the TV does not tell", DIM),
-        ]));
+        let mode = match (&model.picture_mode, tv.signed) {
+            (Some(mode), _) => vec![
+                Span::raw(mode.clone()),
+                Span::styled(" · set by telka", DIM),
+            ],
+            (None, true) => vec![Span::styled("unknown · v sets it", DIM)],
+            (None, false) => vec![Span::styled("the TV does not tell", DIM)],
+        };
+        let mut spans = vec![label("mode")];
+        spans.extend(mode);
+        lines.push(Line::from(spans));
     }
     lines
 }
@@ -431,7 +440,7 @@ fn remote(model: &Model, frame: &mut Frame, area: Rect, spots: &mut Vec<Hotspot>
         if row >= height || column + text_width(text) > area.width {
             continue;
         }
-        rows[usize::from(row)].push((column, Span::raw(text.to_owned())));
+        rows[usize::from(row)].push((column, key_cap(model, text, action)));
         spots.push(Hotspot {
             area: Rect::new(area.x + column, area.y + row, text_width(text), 1),
             target: Target::Act(action),
@@ -439,9 +448,9 @@ fn remote(model: &Model, frame: &mut Frame, area: Rect, spots: &mut Vec<Hotspot>
     }
     // The volume buttons, with "vol" between them.
     if 5 < height && 28 + 7 <= area.width {
-        rows[5].push((28, Span::raw("-")));
+        rows[5].push((28, key_cap(model, "-", Action::VolumeDown)));
         rows[5].push((30, Span::styled("vol", DIM)));
-        rows[5].push((34, Span::raw("+")));
+        rows[5].push((34, key_cap(model, "+", Action::VolumeUp)));
         for (column, action) in [(28, Action::VolumeDown), (34, Action::VolumeUp)] {
             spots.push(Hotspot {
                 area: Rect::new(area.x + column, area.y + 5, 1, 1),
@@ -476,6 +485,15 @@ fn remote(model: &Model, frame: &mut Frame, area: Rect, spots: &mut Vec<Hotspot>
         lines[7] = sent_line(model);
     }
     frame.render_widget(Paragraph::new(lines), area);
+}
+
+/// A button of the remote pane, lit for a moment after it was pressed.
+fn key_cap(model: &Model, text: &str, action: Action) -> Span<'static> {
+    if model.lit(action) {
+        Span::styled(text.to_owned(), BOLD.fg(Color::Black).bg(ACCENT))
+    } else {
+        Span::raw(text.to_owned())
+    }
 }
 
 fn text_width(text: &str) -> u16 {
@@ -535,7 +553,7 @@ fn activity_line(model: &Model, entry: &Entry, width: usize) -> Line<'static> {
         room.saturating_sub(text.chars().count())
             .min(tail.chars().count()),
     );
-    spread(
+    let line = spread(
         vec![
             Span::styled(time, DIM),
             Span::raw("  "),
@@ -548,7 +566,12 @@ fn activity_line(model: &Model, entry: &Entry, width: usize) -> Line<'static> {
         ],
         vec![origin],
         width,
-    )
+    );
+    if model.flashing(entry) {
+        line.style(Style::new().bg(SELECTED))
+    } else {
+        line
+    }
 }
 
 fn seconds(seconds: f64) -> String {
@@ -726,6 +749,7 @@ fn hint_bar(model: &Model, frame: &mut Frame, area: Rect, shape: Shape) {
                     PickerKind::Apps => "open",
                     PickerKind::Inputs => "switch",
                     PickerKind::Buttons => "press",
+                    PickerKind::Modes => "set",
                 },
             ),
             (0, "Esc", "close"),
@@ -795,11 +819,13 @@ fn picker_dialog(model: &Model, picker: &Picker, frame: &mut Frame, area: Rect) 
         PickerKind::Apps => model.tv.as_ref().map_or(0, |tv| tv.apps.len()),
         PickerKind::Inputs => model.tv.as_ref().map_or(0, |tv| tv.inputs.len()),
         PickerKind::Buttons => webos::Button::all().count(),
+        PickerKind::Modes => crate::control::PICTURE_MODES.len(),
     };
     let (title, noun) = match picker.kind {
         PickerKind::Apps => (" apps ", "apps"),
         PickerKind::Inputs => (" inputs ", "inputs"),
         PickerKind::Buttons => (" remote buttons ", "buttons"),
+        PickerKind::Modes => (" picture mode ", "modes"),
     };
     let width = usize::from(area.width.saturating_sub(8)).min(64);
     let mut text = vec![

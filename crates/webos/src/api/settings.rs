@@ -113,7 +113,7 @@ const ALERT_CLOSE: Duration = Duration::from_secs(3);
 impl Client {
     /// Calls `uri` on the TV's internal Luna bus, like
     /// `com.webos.settingsservice/setSystemSettings`, through an alert that is closed at once.
-    /// The call's answer does not come back. [`Error::TimedOut`] means the alert may still be on
+    /// The call's answer does not come back. [`Error::AlertOpen`] means the alert may still be on
     /// screen; OK on the remote closes it.
     pub async fn luna(&self, uri: &str, params: Value) -> Result<(), Error> {
         let target = if uri.contains("://") {
@@ -135,13 +135,16 @@ impl Client {
         let id = alert["alertId"]
             .as_str()
             .ok_or_else(|| Error::Protocol("the TV created an alert without an id".into()))?;
-        timeout(
+        let closed = timeout(
             ALERT_CLOSE.min(self.options().timing.request),
             self.request("system.notifications/closeAlert", json!({"alertId": id})),
         )
-        .await
-        .map_err(|_| Error::TimedOut)??;
-        Ok(())
+        .await;
+        match closed {
+            Ok(Ok(_)) => Ok(()),
+            Ok(Err(Error::TimedOut)) | Err(_) => Err(Error::AlertOpen),
+            Ok(Err(error)) => Err(error),
+        }
     }
 
     /// Changes settings in `category` through [`Client::luna`], e.g. `picture` with

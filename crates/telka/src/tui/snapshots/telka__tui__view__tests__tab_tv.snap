@@ -1,6 +1,5 @@
 ---
 source: crates/telka/src/tui/view.rs
-assertion_line: 902
 expression: "screen(&model, 70, 22)"
 ---
 "╭ OLED55C16LA ─────────────────────────────────────────────────── on ╮"
@@ -13,7 +12,7 @@ expression: "screen(&model, 70, 22)"
 "│                                                                    │"
 "│ light    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━───────────   80 │"
 "│ energy   auto                                                      │"
-"│ mode     the TV does not tell                                      │"
+"│ mode     unknown · v sets it                                       │"
 "│                                                                    │"
 "│                                                                    │"
 "│                                                                    │"

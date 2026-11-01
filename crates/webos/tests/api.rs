@@ -300,7 +300,7 @@ async fn luna_calls_go_through_an_alert() {
     let stuck = client
         .set_system_settings("time", json!({"sleepTimer": "30"}))
         .await;
-    assert!(matches!(stuck, Err(Error::TimedOut)), "{stuck:?}");
+    assert!(matches!(stuck, Err(Error::AlertOpen)), "{stuck:?}");
 }
 
 #[tokio::test]
