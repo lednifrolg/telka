@@ -42,6 +42,7 @@ impl Telka {
             .args(args)
             .env("TELKA_HOME", self.home.path())
             .env("TELKA_TV_URL", format!("ws://{}", self.tv.address))
+            .env("TELKA_WOL_TARGET", self.tv.wake_address.to_string())
             .env("NO_COLOR", "1")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())

@@ -8,23 +8,41 @@ SSAP API and acts on a real TV that someone may be watching.
 
 ## Status
 
-Early development: `telka` pairs with the TV, finds it on the network and shows what it is
-doing; the commands that change something and the interactive TUI come next. Verified live on an
-LG C1 (OLED65C11LB) with webOS 6.5.3.
+Early development: the command line is complete; the interactive TUI comes next. Verified live
+on an LG C1 (OLED65C11LB) with webOS 6.5.3.
 
 ## Usage
 
 ```sh
-telka pair            # finds the TV; accept the prompt on the TV with the remote
-telka status          # power, what is in front, volume, sound and picture (--json for scripts)
-telka apps            # the apps on the home screen
-telka inputs          # the inputs, with the devices on them
-telka discover        # LG TVs on the network
-telka unpair          # forgets the pairing
+telka pair                  # finds the TV; accept the prompt on the TV with the remote
+telka status                # power, what is in front, volume, sound and picture (--json)
+
+telka on | off | toggle     # off by the power button, on over Wi-Fi (Wake-on-LAN)
+telka screen off | on       # the panel alone; the sound keeps playing
+telka vol 15                # or relative: +2, -2
+telka mute | unmute
+telka app youtube           # by title or id; --url opens a video or a page
+telka input ps5             # by port, label or the device on it
+telka key home down ok      # remote buttons in order; --list shows them all
+telka type "breaking bad" --enter   # into the TV's text field with focus
+telka play | pause | stop
+telka notify "Laundry is done"
+telka picture --light 70 --energy auto --mode cinema   # without options, shows them
+telka watch                 # every change as it happens, from the remote too (--json)
+
+telka apps | inputs | discover | unpair
 ```
 
-`telka <command> --help` has the details. Shell completions and man pages come from the
-binary: `telka completions bash|zsh|fish` and `telka man <dir>`.
+Names match regardless of case and diacritics, and part of a name is enough when it is
+unambiguous. A command waits until the TV reports the change, at most a few seconds;
+`--no-wait` returns once the TV took it. `telka <command> --help` has the details. Shell
+completions and man pages come from the binary: `telka completions bash|zsh|fish` and
+`telka man <dir>`.
+
+What the TV allows, learned on the C1: `telka on` wakes it only after it went off by its power
+button, which `telka off` presses, and it takes up to a minute; a toast does not show over an
+app on the full screen; apps with their own keyboard, like YouTube, ignore typed text; picture
+settings need the signed manifest, and the TV does not tell its picture mode.
 
 ## Pairing
 
@@ -53,6 +71,7 @@ tv = "192.168.1.30"   # a fixed address: telka never looks for the TV on the net
 | 1 | the TV does not answer or failed, or a local file problem |
 | 2 | wrong usage, or something the pairing does not allow |
 | 4 | not paired, the TV no longer accepts the key, or another TV answers |
+| 5 | sent, but the TV did not report the change in time |
 
 ## Using the API responsibly
 

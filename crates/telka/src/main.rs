@@ -3,20 +3,27 @@
 mod commands;
 mod config;
 mod connect;
+mod control;
 mod error;
 mod files;
+mod names;
 mod output;
 mod paths;
 mod store;
 mod theme;
+mod watch;
 
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::Duration;
 
-use clap::{CommandFactory, Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::Shell;
+use webos::Media;
 
+use crate::connect::Tv;
+use crate::control::{Level, PictureChange};
 use crate::error::AppError;
 use crate::paths::Paths;
 
@@ -32,8 +39,17 @@ struct Cli {
     /// Print JSON instead of text.
     #[arg(long, global = true)]
     json: bool,
+    /// Return once the TV took a change, without waiting until it reports it.
+    #[arg(long, global = true)]
+    no_wait: bool,
     #[command(subcommand)]
     command: Command,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum OnOff {
+    On,
+    Off,
 }
 
 #[derive(Debug, Subcommand)]
@@ -53,6 +69,84 @@ enum Command {
     Apps,
     /// List the inputs, with the devices on them.
     Inputs,
+    /// Turn the TV on: with its power button when it is awake, else over Wi-Fi (Wake-on-LAN).
+    On,
+    /// Turn the TV off with its power button, so that `telka on` can wake it again.
+    Off,
+    /// Turn the TV off when it is on, on when it is off.
+    Toggle,
+    /// Turn the screen off or on; the TV stays on and the sound keeps playing.
+    Screen { state: OnOff },
+    /// Set the volume: 15, or relative to now: +2, -2.
+    Vol {
+        #[arg(allow_negative_numbers = true, value_name = "LEVEL")]
+        level: Level,
+    },
+    /// Mute the sound.
+    Mute,
+    /// Unmute the sound.
+    Unmute,
+    /// Start an app by its title or id; part of the title is enough.
+    App {
+        name: String,
+        /// What the app should open: a video URL for YouTube, a page for the web browser.
+        #[arg(long)]
+        url: Option<String>,
+    },
+    /// Switch to an input: HDMI 3, its label, or the name of the device on it.
+    ///
+    /// Over HDMI-CEC, switching can turn on the device on the input.
+    Input { name: String },
+    /// Press remote buttons in order: home, up, down, left, right, ok, back, settings, …
+    Key {
+        #[arg(required_unless_present = "list", value_name = "BUTTON")]
+        buttons: Vec<String>,
+        /// Milliseconds between two buttons.
+        #[arg(long, default_value_t = 250, value_name = "MS")]
+        gap: u64,
+        /// List every button.
+        #[arg(long)]
+        list: bool,
+    },
+    /// Type into the text field on the TV that has focus.
+    ///
+    /// Only fields that use the TV's own keyboard take it, like the web browser's; apps with
+    /// their own keyboard, like YouTube, do not.
+    Type {
+        text: String,
+        /// Press Enter afterwards, which usually submits the field.
+        #[arg(long)]
+        enter: bool,
+        /// Replace what is in the field.
+        #[arg(long)]
+        replace: bool,
+    },
+    /// Play in the app in front.
+    Play,
+    /// Pause in the app in front.
+    Pause,
+    /// Stop in the app in front.
+    Stop,
+    /// Show a message on the TV; not over an app on the full screen.
+    Notify { message: String },
+    /// Show the picture settings, or change them.
+    ///
+    /// Changing them needs a pairing with LG's signed manifest. The TV does not tell its picture
+    /// mode, so a new one is not confirmed.
+    Picture {
+        /// vivid, normal, eco, cinema, sports, game, photo, filmMaker, expert1, expert2, or an
+        /// HDR or Dolby Vision mode like hdrCinema.
+        #[arg(long)]
+        mode: Option<String>,
+        /// OLED light, 0 to 100.
+        #[arg(long, value_name = "0-100")]
+        light: Option<u8>,
+        /// Energy saving: auto, off, min, med or max.
+        #[arg(long)]
+        energy: Option<String>,
+    },
+    /// Print every change on the TV as it happens, until stopped.
+    Watch,
     /// Print a shell completion script.
     ///
     /// For example: telka completions bash > ~/.local/share/bash-completion/completions/telka
@@ -115,15 +209,66 @@ async fn run(cli: Cli) -> Result<(), AppError> {
     }
     let paths = Paths::discover()?;
     let config = config::load(&paths)?;
+    let (json, no_wait) = (cli.json, cli.no_wait);
     match cli.command {
-        Command::Pair { address } => commands::pair(&paths, address).await,
-        Command::Unpair => commands::unpair(&paths),
-        Command::Discover => commands::discover(&paths, cli.json).await,
-        Command::Status => commands::status(&paths, &config, cli.json).await,
-        Command::Apps => commands::apps(&paths, &config, cli.json).await,
-        Command::Inputs => commands::inputs(&paths, &config, cli.json).await,
-        Command::Completions { .. } | Command::Man { .. } => unreachable!("handled above"),
+        Command::Pair { address } => return commands::pair(&paths, address).await,
+        Command::Unpair => return commands::unpair(&paths),
+        Command::Discover => return commands::discover(&paths, json).await,
+        Command::Status => return commands::status(&paths, &config, json).await,
+        Command::Apps => return commands::apps(&paths, &config, json).await,
+        Command::Inputs => return commands::inputs(&paths, &config, json).await,
+        Command::On => return control::on(&paths, &config, no_wait).await,
+        Command::Toggle => return control::toggle(&paths, &config, no_wait).await,
+        Command::Watch => return watch::watch(&paths, &config, json).await,
+        Command::Key { list: true, .. } => {
+            control::list_buttons();
+            return Ok(());
+        }
+        _ => {}
     }
+    let tv = Tv::connect(&paths, &config).await?;
+    let result = match cli.command {
+        Command::Off => control::off(&tv, no_wait).await,
+        Command::Screen { state } => {
+            control::screen(&tv, matches!(state, OnOff::On), no_wait).await
+        }
+        Command::Vol { level } => control::volume(&tv, level, no_wait).await,
+        Command::Mute => control::mute(&tv, true, no_wait).await,
+        Command::Unmute => control::mute(&tv, false, no_wait).await,
+        Command::App { name, url } => control::app(&tv, &name, url.as_deref(), no_wait).await,
+        Command::Input { name } => control::input(&tv, &name, no_wait).await,
+        Command::Key { buttons, gap, .. } => {
+            control::keys(&tv, &buttons, Duration::from_millis(gap)).await
+        }
+        Command::Type {
+            text,
+            enter,
+            replace,
+        } => control::type_text(&tv, &text, enter, replace).await,
+        Command::Play => control::media(&tv, Media::Play).await,
+        Command::Pause => control::media(&tv, Media::Pause).await,
+        Command::Stop => control::media(&tv, Media::Stop).await,
+        Command::Notify { message } => control::notify(&tv, &message).await,
+        Command::Picture {
+            mode,
+            light,
+            energy,
+        } => {
+            control::picture(
+                &tv,
+                PictureChange {
+                    mode,
+                    light,
+                    energy,
+                },
+                json,
+            )
+            .await
+        }
+        _ => unreachable!("every other command is handled above"),
+    };
+    tv.client.close().await;
+    result
 }
 
 fn main() -> ExitCode {
