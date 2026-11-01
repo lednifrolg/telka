@@ -8,8 +8,8 @@ SSAP API and acts on a real TV that someone may be watching.
 
 ## Status
 
-Early development: the command line is complete and the interactive TUI works as a remote;
-typing into the TV, the mouse as its pointer, picture settings and animations come next. Verified
+Early development: the command line is complete and the interactive TUI works as a remote,
+with typing into the TV and the mouse as its pointer; picture settings and animations come next. Verified
 live on an LG C1 (OLED65C11LB) with webOS 6.5.3.
 
 ## Usage
@@ -54,12 +54,17 @@ with the TV on its first start.
 | `␣` `,` `.` | pause and play in turn, rewind, fast forward |
 | `+` `-` `m` | volume, mute |
 | `a` `i` | pick an app or an input: type to filter, `⏎` to open |
+| `k` | any other button of the remote by name: info, guide, colors, numbers, … |
+| `t` | type into the TV: letters go out as you type, `⏎` is Enter on the TV |
 | `d` | screen off or on; the sound stays |
 | `p` | wake the TV; when it is on, twice to turn it off |
 | `R` `?` `q` | read everything again, every key, quit |
 
-A click on a button in the remote pane presses it, and the wheel over the volume turns it. In a
-narrow window, `Tab` switches between the TV and the activity.
+The line for typing also opens on its own when a text field on the TV gets focus; only fields
+with the TV's own keyboard take it. In the remote pane, a click on a button presses it, and
+elsewhere the mouse is the TV's pointer: a drag moves it, a click clicks, the wheel scrolls. The
+wheel over the volume turns it. In a narrow window, `Tab` switches between the TV and the
+activity.
 
 What the TV allows, learned on the C1: `telka on` wakes it only after it went off by its power
 button, which `telka off` presses, and it takes up to a minute; a toast does not show over an
@@ -81,6 +86,7 @@ sends Wake-on-LAN, which needs "Turn on via Wi-Fi" in the TV's settings.
 
 ```toml
 tv = "192.168.1.30"   # a fixed address: telka never looks for the TV on the network
+pointer_speed = 12    # pixels on the TV per column a drag moves the pointer
 ```
 
 `TELKA_HOME` puts config and state in one directory.

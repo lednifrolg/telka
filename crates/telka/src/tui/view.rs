@@ -8,7 +8,9 @@ use ratatui::widgets::{Block, BorderType, Clear, Padding, Paragraph};
 use webos::Button;
 
 use super::keymap::{Action, BINDINGS, Hint};
-use super::model::{Dialog, Entry, Model, Origin, Overlay, Phase, Picker, PickerKind, Status, Tab};
+use super::model::{
+    Dialog, Entry, Model, Origin, Overlay, Phase, Picker, PickerKind, Status, Tab, TextLine,
+};
 use crate::theme;
 
 const DIM: Style = Style::new().add_modifier(Modifier::DIM);
@@ -45,6 +47,8 @@ pub enum Target {
     Tab(Tab),
     /// The volume bar: the wheel turns it.
     Volume,
+    /// The remote pane around its buttons: the mouse there is the TV's pointer.
+    Pad,
 }
 
 /// A screen area the mouse can point at.
@@ -115,6 +119,10 @@ pub fn render(model: &Model, frame: &mut Frame) -> Vec<Hotspot> {
         }
         Overlay::Help => {
             help(frame, area);
+            spots.clear();
+        }
+        Overlay::Text(line) => {
+            text_line(line, frame, area);
             spots.clear();
         }
         Overlay::None => {}
@@ -391,8 +399,14 @@ fn bar(value: u8, max: u8, width: usize, lit: bool) -> Vec<Span<'static>> {
     ]
 }
 
-/// The remote pane: the buttons the keys stand for, each clickable, and what went out last.
+/// The remote pane: the buttons the keys stand for, each clickable, what the pointer did, and
+/// what went out last.
 fn remote(model: &Model, frame: &mut Frame, area: Rect, spots: &mut Vec<Hotspot>) {
+    // The whole pane first: buttons drawn later win the click.
+    spots.push(Hotspot {
+        area,
+        target: Target::Pad,
+    });
     // (column, row, text, action); columns are in characters from the pane's left edge.
     let buttons: [(u16, u16, &str, Action); 15] = [
         (12, 1, "▲", Action::Press(Button::UP)),
@@ -451,6 +465,13 @@ fn remote(model: &Model, frame: &mut Frame, area: Rect, spots: &mut Vec<Hotspot>
             Line::from(spans)
         })
         .collect();
+    if lines.len() > 6 {
+        let pointer = model.pointer.as_ref().map_or_else(
+            || Span::styled("drag here to move it · click · wheel scrolls", DIM),
+            |pointer| Span::raw(pointer.clone()),
+        );
+        lines[6] = Line::from(vec![Span::styled(fit("pointer", LABEL), DIM), pointer]);
+    }
     if lines.len() > 7 {
         lines[7] = sent_line(model);
     }
@@ -701,12 +722,17 @@ fn hint_bar(model: &Model, frame: &mut Frame, area: Rect, shape: Shape) {
             (
                 0,
                 "⏎",
-                if picker.kind == PickerKind::Apps {
-                    "open"
-                } else {
-                    "switch"
+                match picker.kind {
+                    PickerKind::Apps => "open",
+                    PickerKind::Inputs => "switch",
+                    PickerKind::Buttons => "press",
                 },
             ),
+            (0, "Esc", "close"),
+        ],
+        (Overlay::Text(_), _) => vec![
+            (0, "⏎", "Enter on the TV"),
+            (0, "⌫", "delete"),
             (0, "Esc", "close"),
         ],
         (_, Phase::Pairing(Dialog::Failed(_))) => vec![(0, "⏎", "try again"), (0, "q", "quit")],
@@ -765,13 +791,15 @@ const PICKER_ROWS: usize = 10;
 
 fn picker_dialog(model: &Model, picker: &Picker, frame: &mut Frame, area: Rect) {
     let choices = model.choices();
-    let total = model.tv.as_ref().map_or(0, |tv| match picker.kind {
-        PickerKind::Apps => tv.apps.len(),
-        PickerKind::Inputs => tv.inputs.len(),
-    });
+    let total = match picker.kind {
+        PickerKind::Apps => model.tv.as_ref().map_or(0, |tv| tv.apps.len()),
+        PickerKind::Inputs => model.tv.as_ref().map_or(0, |tv| tv.inputs.len()),
+        PickerKind::Buttons => webos::Button::all().count(),
+    };
     let (title, noun) = match picker.kind {
         PickerKind::Apps => (" apps ", "apps"),
         PickerKind::Inputs => (" inputs ", "inputs"),
+        PickerKind::Buttons => (" remote buttons ", "buttons"),
     };
     let width = usize::from(area.width.saturating_sub(8)).min(64);
     let mut text = vec![
@@ -826,6 +854,44 @@ fn picker_dialog(model: &Model, picker: &Picker, frame: &mut Frame, area: Rect) 
     centered(frame, area, title, text);
 }
 
+/// The line that types into the TV, at the bottom so the TV's state stays in view.
+fn text_line(line: &TextLine, frame: &mut Frame, area: Rect) {
+    let what = match line.field.as_deref() {
+        Some("url") => "an address field on the TV has focus".to_owned(),
+        Some(kind) if !kind.is_empty() => format!("a {kind} field on the TV has focus"),
+        _ => "goes to the text field on the TV that has focus".to_owned(),
+    };
+    let shown = if line.hidden {
+        "•".repeat(line.text.chars().count())
+    } else {
+        line.text.clone()
+    };
+    let width = usize::from(area.width.saturating_sub(8)).min(64);
+    let text = vec![
+        Line::styled(what, DIM),
+        Line::default(),
+        Line::from(vec![
+            Span::styled("❯ ", Style::new().fg(ACCENT)),
+            Span::raw(shown.clone()),
+            Span::styled("▏", Style::new().fg(ACCENT)),
+            Span::raw(" ".repeat(width.saturating_sub(shown.chars().count() + 3))),
+        ]),
+    ];
+    let height = u16::try_from(text.len() + 2).unwrap_or(u16::MAX);
+    let popup_width = u16::try_from(width + 4).unwrap_or(u16::MAX).min(area.width);
+    let x = area.x + area.width.saturating_sub(popup_width) / 2;
+    // Above the status line and the hints.
+    let y = area.bottom().saturating_sub(height + 3);
+    let popup = Rect::new(x, y, popup_width, height);
+    frame.render_widget(Clear, popup);
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(ACCENT))
+        .title(Span::styled(" type on the TV ", BOLD.fg(ACCENT)))
+        .padding(Padding::horizontal(1));
+    frame.render_widget(Paragraph::new(text).block(block), popup);
+}
+
 fn help(frame: &mut Frame, area: Rect) {
     let mut text: Vec<Line<'static>> = BINDINGS
         .iter()
@@ -839,10 +905,14 @@ fn help(frame: &mut Frame, area: Rect) {
         .collect();
     text.push(Line::default());
     text.push(Line::styled(
-        "mouse: a click on a button in the remote pane presses it,",
+        "mouse: in the remote pane, a click on a button presses it; a drag",
         DIM,
     ));
-    text.push(Line::styled("the wheel over the volume turns it", DIM));
+    text.push(Line::styled(
+        "moves the TV's pointer, a click clicks, the wheel scrolls; the",
+        DIM,
+    ));
+    text.push(Line::styled("wheel over the volume turns it", DIM));
     centered(frame, area, " keys ", text);
 }
 
@@ -962,6 +1032,33 @@ mod tests {
     }
 
     #[test]
+    fn the_line_that_types_into_the_tv() {
+        let mut model = lived_in();
+        model.update(Msg::Changed(Change::Keyboard(webos::Keyboard {
+            focused: true,
+            content_type: Some("url".into()),
+            hidden: false,
+        })));
+        for c in "lg.com".chars() {
+            model.update(key(KeyCode::Char(c)));
+        }
+        insta::assert_snapshot!(screen(&model, 110, 26));
+    }
+
+    #[test]
+    fn the_button_picker_and_the_pointer() {
+        let mut model = lived_in();
+        model.update(Msg::Pointer(crate::tui::model::Pointer::Move {
+            dx: 36,
+            dy: -24,
+        }));
+        model.update(key(KeyCode::Char('k')));
+        model.update(key(KeyCode::Char('r')));
+        model.update(key(KeyCode::Char('e')));
+        insta::assert_snapshot!(screen(&model, 110, 26));
+    }
+
+    #[test]
     fn clicks_land_on_the_buttons() {
         let model = lived_in();
         let mut terminal = Terminal::new(TestBackend::new(110, 26)).unwrap();
@@ -988,6 +1085,7 @@ mod tests {
         );
         assert_eq!(at(left + 10, 6), Some(Target::Act(Action::PlayPause)));
         assert_eq!(at(5, 3), Some(Target::Volume));
+        assert_eq!(at(left + 20, 2), Some(Target::Pad), "next to the buttons");
         let _ = snapshot();
     }
 }

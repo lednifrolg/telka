@@ -1,6 +1,6 @@
 ---
 source: crates/telka/src/tui/view.rs
-assertion_line: 934
+assertion_line: 1004
 expression: "screen(&model, 110, 26)"
 ---
 "╭ OLED55C16LA ─────────────────────── waking ╮╭ remote ─────────────────────────────────── keys go to the TV ╮"
@@ -10,7 +10,7 @@ expression: "screen(&model, 110, 26)"
 "│ it takes up to a minute                    ││             ▼               apps     inputs                  │"
 "│                                            ││                                                              │"
 "│                                            ││      ◀◀   play/pause   ▶▶   - vol +  mute                    │"
-"│                                            ││                                                              │"
+"│                                            ││ pointer  drag here to move it · click · wheel scrolls        │"
 "│                                            ││ sent     ↑ ↑ OK                                              │"
 "╰────────────────────────────────────────────╯╰──────────────────────────────────────────────────────────────╯"
 "╭ activity ───────────────────────────────────────────────────────────────────────────────────────────── off ╮"

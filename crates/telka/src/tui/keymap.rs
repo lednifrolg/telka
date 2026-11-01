@@ -19,6 +19,10 @@ pub enum Action {
     Mute,
     Apps,
     Inputs,
+    /// Every other button of the remote, picked by name.
+    Buttons,
+    /// The line that types into the TV.
+    Type,
     /// The panel off or on; the sound stays.
     Screen,
     /// Wakes a TV that is off; turns it off on the second press.
@@ -174,6 +178,26 @@ pub const BINDINGS: &[Binding] = &[
         rank: 8,
         codes: &[Char('i')],
         action: Action::Inputs,
+    },
+    Binding {
+        keys: "k",
+        short: "k",
+        help: "any other button of the remote: info, guide, colors, numbers, …",
+        label: "buttons",
+        hint: Hint::Never,
+        rank: u8::MAX,
+        codes: &[Char('k')],
+        action: Action::Buttons,
+    },
+    Binding {
+        keys: "t",
+        short: "t",
+        help: "type into the TV; opens on its own when a text field has focus",
+        label: "type",
+        hint: Hint::Never,
+        rank: u8::MAX,
+        codes: &[Char('t')],
+        action: Action::Type,
     },
     Binding {
         keys: "d",

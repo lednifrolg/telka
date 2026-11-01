@@ -24,7 +24,7 @@ use ratatui::layout::Position;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use webos::{
-    Button, Client, ForegroundApp, Inputs, LaunchPoints, Manifest, Picture, PowerState,
+    Button, Client, ForegroundApp, Inputs, Keyboard, LaunchPoints, Manifest, Picture, PowerState,
     SoundOutput, SoundSettings, Volume,
 };
 
@@ -35,7 +35,7 @@ use crate::output;
 use crate::pairing;
 use crate::paths::Paths;
 use crate::store::Paired;
-use model::{Change, Effect, Failure, Model, Msg, PairingMsg, Snapshot, Start};
+use model::{Change, Effect, Failure, Model, Msg, PairingMsg, Pointer, Snapshot, Start};
 use view::{Hotspot, Target};
 
 /// How often the clock and the countdowns are updated, and how often while a spinner turns.
@@ -81,10 +81,17 @@ pub async fn run(paths: Paths) -> Result<(), AppError> {
     result
 }
 
+/// What goes over the input socket.
+#[derive(Debug, Clone, Copy)]
+enum RemoteInput {
+    Button(Button),
+    Pointer(Pointer),
+}
+
 /// The connection and what keeps working on it.
 struct Session {
     client: Client,
-    buttons: mpsc::UnboundedSender<Button>,
+    remote: mpsc::UnboundedSender<RemoteInput>,
     volume: watch::Sender<Option<u8>>,
     workers: Vec<JoinHandle<()>>,
 }
@@ -110,6 +117,13 @@ impl Tasks {
             old.abort();
         }
     }
+}
+
+/// A press of the left button: where, on what, and whether it moved since.
+struct Press {
+    target: Option<Target>,
+    last: Position,
+    moved: bool,
 }
 
 struct Runner<'a> {
@@ -140,6 +154,8 @@ async fn event_loop(
         runner.spawn(effect);
     }
     let mut hotspots: Vec<Hotspot> = Vec::new();
+    let mut press: Option<Press> = None;
+    let speed = config.pointer_speed();
     while !model.quit {
         terminal
             .draw(|frame| hotspots = view::render(model, frame))
@@ -158,7 +174,9 @@ async fn event_loop(
         for item in incoming {
             match item {
                 Incoming::Msg(msg) => messages.push(*msg),
-                Incoming::Mouse(event) => messages.extend(place(event, &hotspots)),
+                Incoming::Mouse(event) => {
+                    messages.extend(place(event, &hotspots, &mut press, speed));
+                }
                 Incoming::Session(client) => runner.start_session(client),
             }
         }
@@ -183,22 +201,68 @@ async fn event_loop(
     Ok(())
 }
 
-/// The message a click or the wheel stands for, by what is under the pointer.
-fn place(event: MouseEvent, hotspots: &[Hotspot]) -> Option<Msg> {
+/// What the mouse stands for, by what is under it. A click acts when the button comes up
+/// without a drag; a drag that starts in the remote pane moves the TV's pointer.
+fn place(
+    event: MouseEvent,
+    hotspots: &[Hotspot],
+    press: &mut Option<Press>,
+    speed: i32,
+) -> Option<Msg> {
     let pointer = Position::new(event.column, event.row);
-    let spot = hotspots
+    let under = hotspots
         .iter()
         .rev()
-        .find(|spot| spot.area.contains(pointer))?;
-    let up = match event.kind {
-        MouseEventKind::ScrollUp => Some(true),
-        MouseEventKind::ScrollDown => Some(false),
-        _ => None,
-    };
-    match (&spot.target, up) {
-        (Target::Volume, Some(up)) => Some(Msg::Wheel { up }),
-        (Target::Act(action), None) => Some(Msg::Act(*action)),
-        (Target::Tab(tab), None) => Some(Msg::Tab(*tab)),
+        .find(|spot| spot.area.contains(pointer))
+        .map(|spot| spot.target.clone());
+    match event.kind {
+        MouseEventKind::Down(MouseButton::Left) => {
+            *press = Some(Press {
+                target: under,
+                last: pointer,
+                moved: false,
+            });
+            None
+        }
+        MouseEventKind::Drag(MouseButton::Left) => {
+            let held = press.as_mut()?;
+            if !matches!(held.target, Some(Target::Pad | Target::Act(_))) {
+                return None;
+            }
+            let dx = i32::from(pointer.x) - i32::from(held.last.x);
+            let dy = i32::from(pointer.y) - i32::from(held.last.y);
+            if dx == 0 && dy == 0 {
+                return None;
+            }
+            held.last = pointer;
+            held.moved = true;
+            Some(Msg::Pointer(Pointer::Move {
+                dx: dx * speed,
+                dy: dy * speed * 2,
+            }))
+        }
+        MouseEventKind::Up(MouseButton::Left) => {
+            let held = press.take()?;
+            if held.moved {
+                return None;
+            }
+            match held.target? {
+                Target::Act(action) => Some(Msg::Act(action)),
+                Target::Tab(tab) => Some(Msg::Tab(tab)),
+                Target::Pad => Some(Msg::Pointer(Pointer::Click)),
+                Target::Volume => None,
+            }
+        }
+        MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+            let up = event.kind == MouseEventKind::ScrollUp;
+            match under? {
+                Target::Volume => Some(Msg::Wheel { up }),
+                Target::Pad | Target::Act(_) => Some(Msg::Pointer(Pointer::Scroll {
+                    dy: if up { -3 } else { 3 },
+                })),
+                Target::Tab(_) => None,
+            }
+        }
         _ => None,
     }
 }
@@ -217,6 +281,8 @@ fn read_input(tx: mpsc::UnboundedSender<Incoming>) {
                     if matches!(
                         mouse.kind,
                         MouseEventKind::Down(MouseButton::Left)
+                            | MouseEventKind::Drag(MouseButton::Left)
+                            | MouseEventKind::Up(MouseButton::Left)
                             | MouseEventKind::ScrollUp
                             | MouseEventKind::ScrollDown
                     ) =>
@@ -243,17 +309,34 @@ impl Runner<'_> {
     }
 
     fn start_session(&mut self, client: Client) {
-        let (buttons, presses) = mpsc::unbounded_channel();
+        let (remote, inputs) = mpsc::unbounded_channel();
         let (volume, levels) = watch::channel(None);
         let workers = vec![
-            tokio::spawn(press_buttons(client.clone(), presses)),
+            tokio::spawn(use_remote(client.clone(), inputs, self.report())),
             tokio::spawn(set_volume(client.clone(), levels)),
         ];
         self.session = Some(Session {
             client,
-            buttons,
+            remote,
             volume,
             workers,
+        });
+    }
+
+    /// Runs `request` on the connection, telling only when it fails.
+    fn fire<F>(&self, request: impl FnOnce(Client) -> F + Send + 'static)
+    where
+        F: Future<Output = Result<(), webos::Error>> + Send + 'static,
+    {
+        let report = self.report();
+        let Some(session) = &self.session else {
+            return;
+        };
+        let client = session.client.clone();
+        tokio::spawn(async move {
+            if let Err(error) = request(client).await {
+                report(Msg::Failed(error.to_string()));
+            }
         });
     }
 
@@ -290,9 +373,19 @@ impl Runner<'_> {
             }
             Effect::Press(button) => {
                 if let Some(session) = &self.session {
-                    let _ = session.buttons.send(button);
+                    let _ = session.remote.send(RemoteInput::Button(button));
                 }
             }
+            Effect::Pointer(pointer) => {
+                if let Some(session) = &self.session {
+                    let _ = session.remote.send(RemoteInput::Pointer(pointer));
+                }
+            }
+            Effect::Type(text) => {
+                self.fire(move |client| async move { client.insert_text(&text, false).await });
+            }
+            Effect::Delete => self.fire(|client| async move { client.delete_characters(1).await }),
+            Effect::Enter => self.fire(|client| async move { client.send_enter().await }),
             Effect::Volume(level) => {
                 if let Some(session) = &self.session {
                     session.volume.send_replace(Some(level));
@@ -361,20 +454,35 @@ impl Runner<'_> {
     }
 }
 
-/// Sends buttons in order over one input socket, opened when the first one comes and again when
-/// it broke.
-async fn press_buttons(client: Client, mut presses: mpsc::UnboundedReceiver<Button>) {
+/// Sends buttons and pointer moves in order over one input socket, opened when the first one
+/// comes and again when it broke.
+async fn use_remote(
+    client: Client,
+    mut inputs: mpsc::UnboundedReceiver<RemoteInput>,
+    report: impl Fn(Msg),
+) {
     let mut remote = None;
-    while let Some(button) = presses.recv().await {
+    while let Some(input) = inputs.recv().await {
+        let mut sent = false;
         for _ in 0..2 {
             if remote.is_none() {
                 remote = client.remote().await.ok();
             }
             let Some(open) = &remote else { break };
-            if open.button(button).await.is_ok() {
+            let result = match input {
+                RemoteInput::Button(button) => open.button(button).await,
+                RemoteInput::Pointer(Pointer::Move { dx, dy }) => open.move_by(dx, dy, false).await,
+                RemoteInput::Pointer(Pointer::Click) => open.click().await,
+                RemoteInput::Pointer(Pointer::Scroll { dy }) => open.scroll(0, dy).await,
+            };
+            if result.is_ok() {
+                sent = true;
                 break;
             }
             remote = None;
+        }
+        if !sent {
+            report(Msg::Failed("the TV's input socket does not answer".into()));
         }
     }
 }
@@ -400,7 +508,10 @@ async fn follow(
         let _ = tx.send(Incoming::Msg(Box::new(msg)));
     };
     tokio::time::sleep(after).await;
-    let config = Config { tv: fixed };
+    let config = Config {
+        tv: fixed,
+        pointer_speed: None,
+    };
     let tv = match Tv::connect(&paths, &config).await {
         Ok(tv) => tv,
         Err(error) => return report(Msg::Connected(Err(failure(&paths, &error)))),
@@ -421,18 +532,31 @@ async fn follow(
     let (Ok(mut power), Ok(mut front), Ok(mut volume), Ok(mut output)) = watches else {
         return report(Msg::Lost);
     };
+    // Not every TV tells about its text fields; without it, `t` still opens the line.
+    let mut keyboard = client.watch::<Keyboard>().await.ok();
     loop {
         let change = tokio::select! {
             change = power.next() => change.map(|change| change.map(Change::Power)),
             change = front.next() => change.map(|change| change.map(|front| Change::App(front.0))),
             change = volume.next() => change.map(|change| change.map(Change::Volume)),
             change = output.next() => change.map(|change| change.map(|output| Change::Output(output.0))),
+            Some(change) = next_or_never(keyboard.as_mut()) => Some(change.map(Change::Keyboard)),
         };
         match change {
             Some(Ok(change)) => report(Msg::Changed(change)),
             Some(Err(_)) => {}
             None => return report(Msg::Lost),
         }
+    }
+}
+
+/// The next change of an optional watch; never for a watch that is not there.
+async fn next_or_never<T: webos::Report>(
+    watch: Option<&mut webos::Watch<T>>,
+) -> Option<Result<T, webos::Error>> {
+    match watch {
+        Some(watch) => watch.next().await,
+        None => std::future::pending().await,
     }
 }
 

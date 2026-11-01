@@ -1,6 +1,6 @@
 ---
 source: crates/telka/src/tui/view.rs
-assertion_line: 917
+assertion_line: 987
 expression: "screen(&model, 110, 26)"
 ---
 "╭ OLED55C16LA ─────────────────────────── on ╮╭ remote ─────────────────────────────────── keys go to the TV ╮"
@@ -10,14 +10,14 @@ expression: "screen(&model, 110, 26)"
 "│ sound    TV speaker · movie                ││             ▼               apps     inputs                  │"
 "│                                            ││                                                              │"
 "│ light    ━━━━━━━━━━━━━━━━━━━━━━──────   80 ││      ◀◀   play/pause   ▶▶   - vol +  mute                    │"
-"│ energy   auto                              ││                                                              │"
+"│ energy   auto                              ││ pointer  drag here to move it · click · wheel scrolls        │"
 "│ mode     the TV doe╭ apps ────────────────────────────────────────────────────────────╮                    │"
 "╰────────────────────│ filter  o▏                                                       │────────────────────╯"
 "╭ activity ──────────│                                                                  │────────────── live ╮"
-"│ 20:04:35  · app    │ ▸   YouTube                              youtube.leanback.v4     │             remote │"
-"│ 20:04:05  ✓ volume │     HBO Max                              com.wbd.stream          │              telka │"
-"│ 20:04:00  · tv     │     Skylink Live TV Application          tv.solocoo.slsk         │              telka │"
-"│                    │     Oneplay                              voyo.cz                 │                    │"
+"│ 20:04:35  · app    │ ▸   Oneplay                              voyo.cz                 │             remote │"
+"│ 20:04:05  ✓ volume │     YouTube                              youtube.leanback.v4     │              telka │"
+"│ 20:04:00  · tv     │     HBO Max                              com.wbd.stream          │              telka │"
+"│                    │     Skylink Live TV Application          tv.solocoo.slsk         │                    │"
 "│                    │     Web Browser                          com.webos.app.browser   │                    │"
 "│                    │                                                                  │                    │"
 "│                    │ 5 of 6 apps                                                      │                    │"
