@@ -3,15 +3,25 @@
 //! A sleeping TV closes its SSAP sockets, so no request can wake it. A magic packet can, when
 //! "Turn on via Wi-Fi" is on in the TV's settings: six `0xFF` bytes and the MAC address of the
 //! interface it sleeps on, sixteen times, as a UDP broadcast.
+//!
+//! On a C1 that works only after the TV went off by its power button (see
+//! [`Client::turn_off`](crate::Client::turn_off)), and the TV ignores the packets for about 30
+//! seconds after going off. [`wake_and_wait`] therefore sends one every second until the TV
+//! answers.
 
 use std::fmt;
 use std::io;
-use std::net::{Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::str::FromStr;
 use std::time::Duration;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use tokio::net::UdpSocket;
+use tokio::time::{Instant, sleep_until};
+
+use crate::error::Error;
+use crate::pair::{Hello, Options, hello};
+use crate::transport::Endpoint;
 
 /// A MAC address, shown as six lowercase hex pairs separated by colons.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -91,14 +101,15 @@ pub fn magic_packet(mac: MacAddress) -> [u8; 102] {
 const REPEAT: usize = 3;
 const REPEAT_GAP: Duration = Duration::from_millis(100);
 
+/// The broadcast to ports 9 and 7, where TVs listen for magic packets.
+fn broadcast() -> [SocketAddr; 2] {
+    let broadcast = Ipv4Addr::BROADCAST.into();
+    [SocketAddr::new(broadcast, 9), SocketAddr::new(broadcast, 7)]
+}
+
 /// Sends the magic packet for `mac` as a broadcast to ports 9 and 7, three times.
 pub async fn wake(mac: MacAddress) -> io::Result<()> {
-    let broadcast = Ipv4Addr::BROADCAST.into();
-    wake_to(
-        mac,
-        &[SocketAddr::new(broadcast, 9), SocketAddr::new(broadcast, 7)],
-    )
-    .await
+    wake_to(mac, &broadcast()).await
 }
 
 /// Sends the magic packet for `mac` to each of `targets`, three times.
@@ -115,6 +126,100 @@ pub async fn wake_to(mac: MacAddress, targets: &[SocketAddr]) -> io::Result<()> 
         }
     }
     Ok(())
+}
+
+/// How long waking may take: up to 40 seconds while the TV still ignores packets, then a few
+/// seconds until it answers.
+pub const WAKE_WINDOW: Duration = Duration::from_secs(90);
+
+const WAKE_EVERY: Duration = Duration::from_secs(1);
+
+/// Sends the magic packet for `mac` every second until the TV at `ip` answers on its TLS port, or
+/// `wait` passed ([`Error::TimedOut`]). Returns the TV's `hello`. The packets go to the broadcast
+/// to everyone and to the broadcast of the local network the TV is on, since networks may pass on
+/// only one of them. A TV that was just turned off still answers for a few seconds: wait until it
+/// stops before calling this.
+pub async fn wake_and_wait(
+    mac: MacAddress,
+    ip: IpAddr,
+    options: &Options,
+    wait: Duration,
+) -> Result<Hello, Error> {
+    let targets = targets_for(ip, if_addrs::get_if_addrs().unwrap_or_default());
+    wake_until(mac, &targets, Endpoint::secure(ip), options, wait).await
+}
+
+/// Ports 9 and 7 of the broadcast to everyone and of the broadcast of each local network that
+/// `ip` belongs to.
+fn targets_for(ip: IpAddr, interfaces: Vec<if_addrs::Interface>) -> Vec<SocketAddr> {
+    let mut addresses = vec![Ipv4Addr::BROADCAST];
+    if let IpAddr::V4(tv) = ip {
+        for interface in interfaces {
+            if let if_addrs::IfAddr::V4(local) = interface.addr
+                && !local.is_loopback()
+                && same_network(local.ip, tv, local.netmask)
+            {
+                addresses.push(
+                    local
+                        .broadcast
+                        .unwrap_or_else(|| directed_broadcast(local.ip, local.netmask)),
+                );
+            }
+        }
+    }
+    addresses.dedup();
+    addresses
+        .into_iter()
+        .flat_map(|address| [9, 7].map(|port| SocketAddr::new(address.into(), port)))
+        .collect()
+}
+
+fn same_network(a: Ipv4Addr, b: Ipv4Addr, netmask: Ipv4Addr) -> bool {
+    let mask = u32::from(netmask);
+    u32::from(a) & mask == u32::from(b) & mask
+}
+
+fn directed_broadcast(ip: Ipv4Addr, netmask: Ipv4Addr) -> Ipv4Addr {
+    Ipv4Addr::from(u32::from(ip) | !u32::from(netmask))
+}
+
+/// Like [`wake_and_wait`], with the packets going to `targets` and the TV answering at
+/// `endpoint`.
+pub async fn wake_until(
+    mac: MacAddress,
+    targets: &[SocketAddr],
+    endpoint: Endpoint,
+    options: &Options,
+    wait: Duration,
+) -> Result<Hello, Error> {
+    let deadline = Instant::now() + wait;
+    let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))
+        .await
+        .map_err(Error::Connect)?;
+    socket.set_broadcast(true).map_err(Error::Connect)?;
+    let packet = magic_packet(mac);
+    // Each look at the TV may take a second at most, so a packet still goes out every second.
+    let mut looking = options.clone();
+    looking.timing.connect = looking.timing.connect.min(WAKE_EVERY);
+    loop {
+        let round = Instant::now();
+        for target in targets {
+            socket
+                .send_to(&packet, target)
+                .await
+                .map_err(Error::Connect)?;
+        }
+        match hello(endpoint, &looking).await {
+            Ok(hello) => return Ok(hello),
+            // Still asleep, or only waking up.
+            Err(Error::Connect(_) | Error::TimedOut | Error::WebSocket(_) | Error::Closed) => {}
+            Err(other) => return Err(other),
+        }
+        if Instant::now() >= deadline {
+            return Err(Error::TimedOut);
+        }
+        sleep_until((round + WAKE_EVERY).min(deadline)).await;
+    }
 }
 
 #[cfg(test)]
@@ -138,6 +243,44 @@ mod tests {
         let json = serde_json::to_string(&mac).unwrap();
         assert_eq!(json, r#""02:00:5e:10:00:01""#);
         assert_eq!(serde_json::from_str::<MacAddress>(&json).unwrap(), mac);
+    }
+
+    #[test]
+    fn packets_also_go_to_the_tvs_own_network() {
+        let interface = |ip: &str, netmask: &str, broadcast: Option<&str>| if_addrs::Interface {
+            name: "eth0".into(),
+            addr: if_addrs::IfAddr::V4(if_addrs::Ifv4Addr {
+                ip: ip.parse().unwrap(),
+                netmask: netmask.parse().unwrap(),
+                prefixlen: 24,
+                broadcast: broadcast.map(|b| b.parse().unwrap()),
+            }),
+            index: None,
+            oper_status: if_addrs::IfOperStatus::Up,
+            is_p2p: false,
+        };
+        let targets = targets_for(
+            "192.168.1.30".parse().unwrap(),
+            vec![
+                interface("127.0.0.1", "255.0.0.0", None),
+                interface("192.168.1.20", "255.255.255.0", None),
+                interface("10.0.0.2", "255.255.255.0", Some("10.0.0.255")),
+            ],
+        );
+        let shown: Vec<String> = targets.iter().map(ToString::to_string).collect();
+        assert_eq!(
+            shown,
+            [
+                "255.255.255.255:9",
+                "255.255.255.255:7",
+                "192.168.1.255:9",
+                "192.168.1.255:7"
+            ]
+        );
+        assert_eq!(
+            targets_for("fd00::30".parse().unwrap(), Vec::new()).len(),
+            2
+        );
     }
 
     #[test]

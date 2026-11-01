@@ -6,12 +6,15 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use common::{answer, drain, endpoint, options, paired, quick, recv, timed, tv, welcome};
+use common::{
+    UUID, answer, drain, endpoint, options, paired, quick, recv, send, timed, tv, welcome,
+};
 use futures_util::StreamExt;
 use serde_json::json;
-use tokio::net::UdpSocket;
+use tokio::net::{TcpListener, UdpSocket};
 use tokio::sync::mpsc;
 use tokio::time::timeout;
+use tokio_tungstenite::accept_async;
 use tokio_tungstenite::tungstenite::Message;
 use webos::{Button, Client, Error, PowerMode, PowerState, Volume};
 
@@ -49,35 +52,70 @@ async fn reports_are_read_and_followed() {
 }
 
 #[tokio::test]
-async fn turning_off_asks_the_state_first() {
-    let address = tv(|mut socket, _| async move {
-        welcome(&mut socket).await;
-        for state in ["Active Standby", "Active"] {
-            let get = recv(&mut socket).await.unwrap();
-            assert_eq!(
-                get["uri"],
-                "ssap://com.webos.service.tvpower/power/getPowerState"
-            );
-            answer(
-                &mut socket,
-                &get,
-                json!({"returnValue": true, "state": state}),
-            )
-            .await;
+async fn turning_off_asks_the_state_first_and_presses_power() {
+    let port: Arc<OnceLock<u16>> = Arc::default();
+    let (frames, mut received) = mpsc::unbounded_channel();
+    let frames = Arc::new(Mutex::new(Some(frames)));
+    let address = tv({
+        let port = Arc::clone(&port);
+        move |mut socket, connection| {
+            let port = Arc::clone(&port);
+            let frames = (connection == 1)
+                .then(|| frames.lock().unwrap().take())
+                .flatten();
+            async move {
+                if connection == 0 {
+                    welcome(&mut socket).await;
+                    for state in ["Active Standby", "Active"] {
+                        let get = recv(&mut socket).await.unwrap();
+                        assert_eq!(
+                            get["uri"],
+                            "ssap://com.webos.service.tvpower/power/getPowerState"
+                        );
+                        answer(
+                            &mut socket,
+                            &get,
+                            json!({"returnValue": true, "state": state}),
+                        )
+                        .await;
+                    }
+                    // Off by the power button, never by system/turnOff: only then can
+                    // Wake-on-LAN turn the TV on again.
+                    let input = recv(&mut socket).await.unwrap();
+                    assert_eq!(
+                        input["uri"],
+                        "ssap://com.webos.service.networkinput/getPointerInputSocket"
+                    );
+                    let path = format!(
+                        "ws://127.0.0.1:{}/resources/0123/netinput.pointer.sock",
+                        port.get().unwrap()
+                    );
+                    answer(
+                        &mut socket,
+                        &input,
+                        json!({"returnValue": true, "socketPath": path}),
+                    )
+                    .await;
+                    let screen = recv(&mut socket).await.unwrap();
+                    assert_eq!(
+                        screen["uri"],
+                        "ssap://com.webos.service.tvpower/power/turnOffScreen"
+                    );
+                    assert_eq!(screen["payload"], json!({"standbyMode": "active"}));
+                    answer(&mut socket, &screen, json!({"returnValue": true})).await;
+                    drain(&mut socket).await;
+                } else if let Some(frames) = frames {
+                    while let Some(Ok(message)) = socket.next().await {
+                        if let Message::Text(text) = message {
+                            let _ = frames.send(text.to_string());
+                        }
+                    }
+                }
+            }
         }
-        let off = recv(&mut socket).await.unwrap();
-        assert_eq!(off["uri"], "ssap://system/turnOff");
-        answer(&mut socket, &off, json!({"returnValue": true})).await;
-        let screen = recv(&mut socket).await.unwrap();
-        assert_eq!(
-            screen["uri"],
-            "ssap://com.webos.service.tvpower/power/turnOffScreen"
-        );
-        assert_eq!(screen["payload"], json!({"standbyMode": "active"}));
-        answer(&mut socket, &screen, json!({"returnValue": true})).await;
-        drain(&mut socket).await;
     })
     .await;
+    port.set(address.port()).unwrap();
     let client = Client::connect(endpoint(address), &paired(), &options())
         .await
         .unwrap();
@@ -86,6 +124,10 @@ async fn turning_off_asks_the_state_first() {
         "Active Standby: nothing sent"
     );
     assert!(client.turn_off().await.unwrap());
+    let pressed = timeout(Duration::from_secs(1), received.recv())
+        .await
+        .unwrap();
+    assert_eq!(pressed.as_deref(), Some("type:button\nname:POWER\n\n"));
     client.set_screen(false).await.unwrap();
 }
 
@@ -278,4 +320,76 @@ async fn wake_on_lan_sends_the_magic_packet_three_times() {
             assert_eq!(buffer[..length], webos::magic_packet(mac));
         }
     }
+}
+
+#[tokio::test]
+async fn waking_repeats_the_packet_until_the_tv_answers() {
+    let udp = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let target = udp.local_addr().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let mut buffer = [0; 200];
+        // Asleep until the third packet.
+        for _ in 0..3 {
+            udp.recv_from(&mut buffer).await.unwrap();
+        }
+        // Looks at the TV while it slept wait in the backlog, already given up: they send no
+        // hello.
+        loop {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let Ok(mut socket) = accept_async(tcp).await else {
+                continue;
+            };
+            let Some(hello) = recv(&mut socket).await else {
+                continue;
+            };
+            assert_eq!(hello["type"], "hello");
+            send(
+                &mut socket,
+                json!({"type": "hello", "payload": {"deviceUUID": UUID}}),
+            )
+            .await;
+            drain(&mut socket).await;
+            return;
+        }
+    });
+    let mac = "02:00:5e:10:00:01".parse().unwrap();
+    let started = tokio::time::Instant::now();
+    let hello = webos::wake_until(
+        mac,
+        &[target],
+        endpoint(address),
+        &options(),
+        Duration::from_secs(10),
+    )
+    .await
+    .unwrap();
+    assert_eq!(hello.uuid, UUID);
+    let took = started.elapsed();
+    assert!(
+        took >= Duration::from_secs(2) && took < Duration::from_secs(8),
+        "{took:?}"
+    );
+}
+
+#[tokio::test]
+async fn waking_gives_up_after_the_wait() {
+    let udp = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let closed = {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap()
+    };
+    let mac = "02:00:5e:10:00:01".parse().unwrap();
+    let error = webos::wake_until(
+        mac,
+        &[udp.local_addr().unwrap()],
+        endpoint(closed),
+        &options(),
+        Duration::from_millis(1500),
+    )
+    .await
+    .err()
+    .unwrap();
+    assert!(matches!(error, Error::TimedOut), "{error:?}");
 }

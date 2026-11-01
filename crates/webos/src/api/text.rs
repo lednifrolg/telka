@@ -32,8 +32,9 @@ impl Report for Keyboard {
 }
 
 impl Client {
-    /// Types `text` into the field with focus; `replace` replaces what is there. The TV takes it
-    /// also when no field has focus.
+    /// Types `text` into the field with focus; `replace` replaces what is there. Only fields that
+    /// use the TV's own keyboard take it, like the web browser's; apps with their own on-screen
+    /// keyboard, like YouTube, ignore it. The TV answers success either way.
     pub async fn insert_text(&self, text: &str, replace: bool) -> Result<(), Error> {
         self.request(
             "com.webos.service.ime/insertText",
@@ -61,7 +62,7 @@ impl Client {
     }
 
     /// Shows `message` in a toast at the edge of the screen; returns the toast's id when the TV
-    /// gives one.
+    /// gives one. Over an app on the full screen, like YouTube, the toast does not show.
     pub async fn toast(&self, message: &str) -> Result<Option<String>, Error> {
         let answer = self
             .request(
