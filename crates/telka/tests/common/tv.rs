@@ -1,6 +1,9 @@
 //! A fake TV: SSAP over plain WebSocket, with enough state for telka's commands. It answers
-//! requests, pushes every subscription when something changes, takes buttons on the input socket
-//! like the real one, applies settings through alerts, and wakes on a magic packet.
+//! requests, pushes a subscription when what it reports changes, takes buttons on the input
+//! socket like the real one, applies settings through alerts, and wakes on a magic packet. For
+//! the end-to-end tests, and for the demo in `examples/demo_tv.rs`.
+// The tests and the demo each use a different part of this module.
+#![allow(dead_code)]
 
 use std::net::SocketAddr;
 use std::path::Path;
@@ -48,6 +51,10 @@ pub struct State {
     pub energy: String,
     pub picture_mode: String,
     pub wake_on_lan: bool,
+    /// The apps, as `listLaunchPoints` lists them.
+    pub launch_points: Value,
+    /// The kind of text field with focus, like `url`; none without focus.
+    pub keyboard: Option<String>,
     /// Takes changes without doing them, to test unconfirmed changes.
     pub ignores_changes: bool,
     /// Never closes alerts, like one stuck on screen; OK on the remote closes it.
@@ -80,6 +87,14 @@ impl Default for State {
             energy: "auto".into(),
             picture_mode: "normal".into(),
             wake_on_lan: true,
+            launch_points: json!([
+                {"id": "youtube.leanback.v4", "title": "YouTube", "systemApp": false, "removable": true},
+                {"id": "netflix", "title": "Netflix", "systemApp": false, "removable": true},
+                {"id": "com.wbd.stream", "title": "HBO Max", "systemApp": false, "removable": true},
+                {"id": "com.hbo.hbomax", "title": "HBO Max", "systemApp": false, "removable": true},
+                {"id": "com.webos.app.browser", "title": "Web Browser", "systemApp": true, "removable": false},
+            ]),
+            keyboard: None,
             ignores_changes: false,
             alerts_stick: false,
             alert: None,
@@ -90,6 +105,14 @@ impl Default for State {
             magic_packets: 0,
         }
     }
+}
+
+/// A subscription on one connection, and what it last reported.
+struct Subscription {
+    id: Value,
+    uri: String,
+    payload: Value,
+    last: Value,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -110,7 +133,11 @@ pub struct FakeTv {
 
 impl FakeTv {
     pub async fn start() -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        Self::start_on(TcpListener::bind("127.0.0.1:0").await.unwrap()).await
+    }
+
+    /// The TV on `listener`, for a demo on a port of its choice.
+    pub async fn start_on(listener: TcpListener) -> Self {
         let wake = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let tv = Self {
             address: listener.local_addr().unwrap(),
@@ -223,7 +250,7 @@ impl FakeTv {
             return;
         };
         let mut events = self.events.subscribe();
-        let mut subscriptions: Vec<(Value, String, Value)> = Vec::new();
+        let mut subscriptions: Vec<Subscription> = Vec::new();
         loop {
             tokio::select! {
                 message = socket.next() => {
@@ -241,8 +268,13 @@ impl FakeTv {
                 }
                 event = events.recv() => match event {
                     Ok(Event::Changed) => {
-                        for (id, uri, payload) in &subscriptions {
-                            if let Ok(answer) = self.answer(uri, payload) {
+                        for subscription in &mut subscriptions {
+                            let Ok(answer) = self.answer(&subscription.uri, &subscription.payload) else {
+                                continue;
+                            };
+                            if answer != subscription.last {
+                                subscription.last = answer.clone();
+                                let id = &subscription.id;
                                 send(&mut socket, json!({"type": "response", "id": id, "payload": answer})).await;
                             }
                         }
@@ -261,7 +293,7 @@ impl FakeTv {
         &self,
         socket: &mut WebSocketStream<TcpStream>,
         frame: &Value,
-        subscriptions: &mut Vec<(Value, String, Value)>,
+        subscriptions: &mut Vec<Subscription>,
     ) -> bool {
         let id = frame["id"].clone();
         let uri = frame["uri"]
@@ -283,11 +315,16 @@ impl FakeTv {
             }
             "register" => return self.register(socket, frame).await,
             "subscribe" => {
-                subscriptions.push((id.clone(), uri.clone(), frame["payload"].clone()));
                 let answer = self.answer(&uri, &frame["payload"]);
+                subscriptions.push(Subscription {
+                    id: id.clone(),
+                    uri,
+                    payload: frame["payload"].clone(),
+                    last: answer.clone().unwrap_or_default(),
+                });
                 send(socket, reply(&id, answer)).await;
             }
-            "unsubscribe" => subscriptions.retain(|(sub, _, _)| *sub != id),
+            "unsubscribe" => subscriptions.retain(|subscription| subscription.id != id),
             "request" => {
                 if uri == "system.notifications/closeAlert" && self.state().alerts_stick {
                     return true;
@@ -434,6 +471,14 @@ impl FakeTv {
                 self.state().typed.push_str(&text);
                 Ok(done)
             }
+            "com.webos.service.ime/deleteCharacters" => {
+                let count = payload["count"].as_u64().unwrap();
+                let mut state = self.state();
+                for _ in 0..count {
+                    state.typed.pop();
+                }
+                Ok(done)
+            }
             "com.webos.service.ime/sendEnterKey" => {
                 self.state().typed.push('\n');
                 Ok(done)
@@ -506,12 +551,11 @@ impl FakeTv {
                 json!({"returnValue": true, "category": payload["category"], "settings": settings})
             }
             "com.webos.applicationManager/listLaunchPoints" => json!({"returnValue": true,
-                "subscribed": false, "caseDetail": {"change": []}, "launchPoints": [
-                    {"id": "youtube.leanback.v4", "title": "YouTube", "systemApp": false, "removable": true},
-                    {"id": "netflix", "title": "Netflix", "systemApp": false, "removable": true},
-                    {"id": "com.wbd.stream", "title": "HBO Max", "systemApp": false, "removable": true},
-                    {"id": "com.hbo.hbomax", "title": "HBO Max", "systemApp": false, "removable": true},
-                    {"id": "com.webos.app.browser", "title": "Web Browser", "systemApp": true, "removable": false}]}),
+                "subscribed": false, "caseDetail": {"change": []},
+                "launchPoints": state.launch_points}),
+            "com.webos.service.ime/registerRemoteKeyboard" => json!({"returnValue": true,
+                "currentWidget": {"focus": state.keyboard.is_some(),
+                    "contentType": state.keyboard.as_deref().unwrap_or("text"), "hiddenText": false}}),
             "tv/getExternalInputList" => json!({"returnValue": true, "devices": [
                 {"id": "HDMI_1", "label": "HDMI 1", "appId": "com.webos.app.hdmi1", "connected": false,
                  "hdmiPlugIn": false, "subList": []},

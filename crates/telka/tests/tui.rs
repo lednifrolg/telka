@@ -258,3 +258,37 @@ async fn animations_can_be_turned_off() {
     }
     assert_eq!(screen.quit().await, 0);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_text_field_on_the_tv_opens_the_line_and_letters_go_there() {
+    let telka = Telka::paired().await;
+    let mut screen = Screen::open(&telka);
+    screen.shows(&["│ mode"]).await;
+
+    telka.tv.change(|tv| tv.keyboard = Some("url".into()));
+    screen
+        .shows(&["an address field on the TV has focus"])
+        .await;
+    // Letters go out as they are typed, Backspace deletes on the TV.
+    screen.press("tvx");
+    tv_has(&telka, |tv| tv.typed == "tvx").await;
+    screen.press("\x7f");
+    tv_has(&telka, |tv| tv.typed == "tv").await;
+    screen.shows(&["❯ tv"]).await;
+    // Enter is Enter on the TV, closes the line and tells what was typed.
+    screen.press("\r");
+    tv_has(&telka, |tv| tv.typed == "tv\n").await;
+    screen.shows(&["type", "\"tv\"", "telka"]).await;
+    assert!(!screen.text().contains("has focus"));
+
+    // The field losing focus closes the line, also one opened by hand.
+    screen.press("t");
+    screen.shows(&["goes to the text field on the TV"]).await;
+    telka.tv.change(|tv| tv.keyboard = None);
+    screen
+        .until("the line closed", |screen| {
+            !screen.contents().contains("goes to the text field")
+        })
+        .await;
+    assert_eq!(screen.quit().await, 0);
+}
