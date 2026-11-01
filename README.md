@@ -8,9 +8,9 @@ SSAP API and acts on a real TV that someone may be watching.
 
 ## Status
 
-Early development: the workspace and CI are set up, the `telka` CLI does not do anything yet.
-Reading the TV's state over the local API has been verified live on an LG C1 (OLED65C11LB) with
-webOS 6.5.3.
+Early development: the `webos` crate pairs with the TV, connects over TLS, and sends requests
+and subscriptions; the `telka` CLI does not do anything yet. Verified live on an LG C1
+(OLED65C11LB) with webOS 6.5.3.
 
 ## Pairing
 
@@ -34,8 +34,12 @@ Nothing leaves your home network. To turn the TV on, telka sends Wake-on-LAN, wh
 | `crates/telka` | the `telka` binary: CLI and TUI |
 
 Test data in `crates/webos/tests/data` is synthetic: one SSAP frame per file, written by hand.
-Never commit captured TV responses, keys or real device identifiers. Code, docs and commit
-messages are in English.
+Tests run against a fake TV on the loopback interface. Never commit captured TV responses, keys or
+real device identifiers. Code, docs and commit messages are in English.
+
+`cargo run -p webos --example probe` talks to a real TV for live checks: `hello`, `pair`,
+`capture` (read-only frames for comparing the synthetic data, kept out of the repository),
+`request` and `watch`.
 
 The checks CI runs:
 
