@@ -10,9 +10,16 @@ repository = "https://github.com/lednifrolg/telka"
 publish = false
 
 [workspace.dependencies]
-clap = { version = "4.6", features = ["derive"] }
+webos = { path = "crates/webos" }
+
+anstream = "1.0"
+anstyle = "1.0"
+clap = { version = "4.6", features = ["derive", "wrap_help"] }
+clap_complete = "4.6"
+clap_mangen = "0.3"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 if-addrs = "0.15"
+jiff = { version = "0.2", features = ["serde"] }
 mdns-sd = "0.21"
 rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs"] }
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
@@ -20,10 +27,13 @@ serde = { version = "1.0", features = ["derive"] }
 # `raw_value` keeps LG's signed manifest byte for byte as it goes into the register message.
 serde_json = { version = "1.0", features = ["raw_value"] }
 sha2 = "0.11"
+tempfile = "3.27"
 thiserror = "2.0"
 tokio = { version = "1.54", features = ["macros", "net", "rt", "sync", "time"] }
 tokio-rustls = { version = "0.26", default-features = false }
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
+toml = "1.1"
+unicode-normalization = "0.1"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

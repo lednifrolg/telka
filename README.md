@@ -8,16 +8,51 @@ SSAP API and acts on a real TV that someone may be watching.
 
 ## Status
 
-Early development: the `webos` crate pairs with the TV, connects over TLS, and sends requests
-and subscriptions; the `telka` CLI does not do anything yet. Verified live on an LG C1
-(OLED65C11LB) with webOS 6.5.3.
+Early development: `telka` pairs with the TV, finds it on the network and shows what it is
+doing; the commands that change something and the interactive TUI come next. Verified live on an
+LG C1 (OLED65C11LB) with webOS 6.5.3.
+
+## Usage
+
+```sh
+telka pair            # finds the TV; accept the prompt on the TV with the remote
+telka status          # power, what is in front, volume, sound and picture (--json for scripts)
+telka apps            # the apps on the home screen
+telka inputs          # the inputs, with the devices on them
+telka discover        # LG TVs on the network
+telka unpair          # forgets the pairing
+```
+
+`telka <command> --help` has the details. Shell completions and man pages come from the
+binary: `telka completions bash|zsh|fish` and `telka man <dir>`.
 
 ## Pairing
 
-`telka pair` finds the TV on the network and asks you to accept telka on the TV with the remote.
-The key the TV issues is kept locally, readable only by you, together with the TV's identity.
-Nothing leaves your home network. To turn the TV on, telka sends Wake-on-LAN, which needs
-"Turn on via Wi-Fi" in the TV's settings.
+`telka pair` finds the TV on the network, or takes its address, and asks you to accept telka on
+the TV with the remote; the prompt names LG's remote app, whose signed manifest telka uses. The
+key the TV issues is kept in `~/.local/state/telka/tv.json`, readable only by you, together with
+the TV's identity: another TV at the address is refused. When the TV's address changes, telka
+finds it again by its serial number. Nothing leaves your home network. To turn the TV on, telka
+sends Wake-on-LAN, which needs "Turn on via Wi-Fi" in the TV's settings.
+
+## Configuration
+
+`~/.config/telka/config.toml` is optional:
+
+```toml
+tv = "192.168.1.30"   # a fixed address: telka never looks for the TV on the network
+```
+
+`TELKA_HOME` puts config and state in one directory.
+
+## Exit codes
+
+| Code | Meaning |
+|---|---|
+| 0 | success; also `telka status` for a TV that is off |
+| 1 | the TV does not answer or failed, or a local file problem |
+| 2 | wrong usage, or something the pairing does not allow |
+| 4 | not paired, the TV no longer accepts the key, or another TV answers |
 
 ## Using the API responsibly
 
@@ -34,7 +69,8 @@ Nothing leaves your home network. To turn the TV on, telka sends Wake-on-LAN, wh
 | `crates/telka` | the `telka` binary: CLI and TUI |
 
 Test data in `crates/webos/tests/data` is synthetic: one SSAP frame per file, written by hand.
-Tests run against a fake TV on the loopback interface. Never commit captured TV responses, keys or
+Tests run against fake TVs on the loopback interface: the CLI tests run the binary against one
+that `TELKA_TV_URL` points at. Never commit captured TV responses, keys or
 real device identifiers. Code, docs and commit messages are in English.
 
 `cargo run -p webos --example probe` talks to a real TV for live checks: `hello`, `pair`,

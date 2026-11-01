@@ -134,10 +134,15 @@ impl Client {
         ))
     }
 
-    /// Connects over TLS, or over the plain port when the TLS port does not answer. A certificate
-    /// that is not LG's, another TV or a refused key is never retried in plain.
+    /// Connects over TLS, or over the plain port when the TLS port refuses or its handshake
+    /// fails. When nothing answers at all, the TV is off or elsewhere, and the plain port is not
+    /// tried. A certificate that is not LG's, another TV or a refused key is never retried in
+    /// plain.
     pub async fn connect_to(ip: IpAddr, paired: &Paired, options: &Options) -> Result<Self, Error> {
         match Self::connect(Endpoint::secure(ip), paired, options).await {
+            Err(Error::Connect(error)) if error.kind() == std::io::ErrorKind::TimedOut => {
+                Err(Error::Connect(error))
+            }
             Err(Error::Connect(_) | Error::TimedOut | Error::WebSocket(_)) => {
                 Self::connect(Endpoint::plain(ip), paired, options).await
             }
