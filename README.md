@@ -6,11 +6,31 @@ remote control, and one-shot commands for the shell.
 Unofficial project, not affiliated with LG Electronics. It talks to the TV's undocumented local
 SSAP API and acts on a real TV that someone may be watching.
 
+![The shell with telka status and telka vol, then the TUI pressing the d-pad, turning the volume and the OLED light, setting a picture mode, opening the web browser and typing an address into it, a volume change from the remote, and the help](assets/demo.gif)
+
 ## Status
 
 Early development: the command line and the interactive TUI are complete, with typing into the
 TV, the mouse as its pointer and the picture settings. Verified live on an LG C1 (OLED65C11LB)
 with webOS 6.5.3.
+
+## Install
+
+From source, with a recent Rust:
+
+```sh
+cargo install --git https://github.com/lednifrolg/telka --locked telka
+```
+
+or from a clone, `cargo install --path crates/telka --locked`. Shell completions and man pages
+come from the binary:
+
+```sh
+telka completions bash > ~/.local/share/bash-completion/completions/telka
+telka completions zsh > ~/.zfunc/_telka      # a directory on your $fpath
+telka completions fish > ~/.config/fish/completions/telka.fish
+telka man ~/.local/share/man/man1
+```
 
 ## Usage
 
@@ -37,9 +57,7 @@ telka apps | inputs | discover | unpair
 
 Names match regardless of case and diacritics, and part of a name is enough when it is
 unambiguous. A command waits until the TV reports the change, at most a few seconds;
-`--no-wait` returns once the TV took it. `telka <command> --help` has the details. Shell
-completions and man pages come from the binary: `telka completions bash|zsh|fish` and
-`telka man <dir>`.
+`--no-wait` returns once the TV took it. `telka <command> --help` has the details.
 
 The TUI is a remote: arrows, Enter and Backspace go to the TV as its buttons, and letters are
 telka's own actions. It shows what the TV does, live, and every change in the activity pane, from
@@ -99,6 +117,38 @@ animations = false    # no lit buttons, flashing changes or running bars in the 
 
 `TELKA_HOME` puts config and state in one directory.
 
+## Recipes
+
+Keys for the TV in Hyprland's Lua config. Each press is a new connection to the TV, so leave the
+bindings without `repeating`; `--no-wait` keeps them quick:
+
+```lua
+hl.bind("SUPER + F11", hl.dsp.exec_cmd("telka vol -2 --no-wait"))
+hl.bind("SUPER + F12", hl.dsp.exec_cmd("telka vol +2 --no-wait"))
+hl.bind("SUPER + F10", hl.dsp.exec_cmd("telka toggle"))
+hl.bind("SUPER + SHIFT + F10", hl.dsp.exec_cmd("telka screen off"))
+```
+
+With `hyprland.conf` instead, `bind = SUPER, F12, exec, telka vol +2 --no-wait`; in Omarchy,
+`o.bind("SUPER + F12", "TV louder", "telka vol +2 --no-wait")` in `~/.config/hypr/bindings.lua`.
+
+A toast on the TV when something is done, from the shell or from a hook, like
+`telka notify "System updated"` in an Omarchy hook at
+`~/.config/omarchy/hooks/post-update.d/telka`:
+
+```sh
+cargo build --release; telka notify "cargo build: exit $?"
+```
+
+`telka watch --json` tells every change as a JSON line, from the remote too, and keeps looking
+for a TV that went off. Pause the music on the computer when the TV comes on:
+
+```sh
+telka watch --json |
+  jq --unbuffered -r 'select(.what == "power" and .from == "off" and .to == "on") | .time' |
+  while read -r _; do playerctl pause; done
+```
+
 ## Exit codes
 
 | Code | Meaning |
@@ -131,7 +181,17 @@ commit messages are in English.
 
 `cargo run -p webos --example probe` talks to a real TV for live checks: `hello`, `pair`,
 `capture` (read-only frames for comparing the synthetic data, kept out of the repository),
-`request` and `watch`.
+`request` and `watch`. The fake TV of the tests, with a few more apps, also serves demos and
+screenshots, and [`assets/demo.tape`](assets/demo.tape) records the GIF above with
+[vhs](https://github.com/charmbracelet/vhs):
+
+```sh
+export TELKA_HOME=$(mktemp -d) TELKA_TV_URL=ws://127.0.0.1:18893
+cargo run -p telka --example demo_tv -- 18893 "$TELKA_HOME" &
+cargo run -p telka
+
+cargo build -p telka --bin telka --examples && vhs assets/demo.tape
+```
 
 The checks CI runs:
 

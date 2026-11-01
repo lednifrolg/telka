@@ -25,7 +25,7 @@ const COMING_ON: SignedDuration = SignedDuration::from_secs(120);
 pub const RETRY: Duration = Duration::from_secs(5);
 /// How long the second `p` that turns the TV off may take.
 const ARMED: SignedDuration = SignedDuration::from_secs(3);
-/// Volume steps this close together change one activity line.
+/// Steps of a setting this close together change one activity line.
 const FOLD: SignedDuration = SignedDuration::from_secs(1);
 const NOTICE: SignedDuration = SignedDuration::from_secs(3);
 /// How long a pressed button lights up, how long a change from elsewhere flashes, and how long
@@ -868,16 +868,13 @@ impl Model {
             .shown_energy()
             .and_then(|now| levels.iter().position(|level| *level == now))
             .map_or(levels[0], |index| levels[(index + 1) % levels.len()]);
-        let text = format!("energy saving {next}");
-        let folded = self.fold(
+        let entry = self.step(
+            "picture",
+            |text| text.starts_with("energy saving"),
             |expect| matches!(expect, Expect::Energy(_)),
             Expect::Energy(next.to_owned()),
-            |_| text.clone(),
+            format!("energy saving {next}"),
         );
-        let entry = match folded {
-            Some(entry) => entry,
-            None => self.expect("picture", text, Expect::Energy(next.to_owned()), CHANGE),
-        };
         vec![Effect::Picture {
             key: "energySaving",
             value: next.to_owned(),
@@ -893,23 +890,13 @@ impl Model {
             return Vec::new();
         };
         let target = u8::try_from((i16::from(level) + step).clamp(0, 100)).unwrap_or(level);
-        let folded = self.fold(
+        let entry = self.step(
+            "picture",
+            |text| text.starts_with("OLED light"),
             |expect| matches!(expect, Expect::Light(_)),
             Expect::Light(target),
-            |text| {
-                let from = text.split(" → ").next().unwrap_or_default();
-                format!("{from} → {target}")
-            },
+            format!("OLED light {level} → {target}"),
         );
-        let entry = match folded {
-            Some(entry) => entry,
-            None => self.expect(
-                "picture",
-                format!("OLED light {level} → {target}"),
-                Expect::Light(target),
-                CHANGE,
-            ),
-        };
         vec![Effect::Picture {
             key: "backlight",
             value: target.to_string(),
@@ -917,32 +904,57 @@ impl Model {
         }]
     }
 
-    /// Folds a change into the one of its kind still on its way, unless that one went wrong:
-    /// it now heads for `expect`, and its line reads `text` of the old one. Its entry.
-    fn fold(
+    /// The activity line for a step of a setting, like the volume, and what it waits for. A step
+    /// close after the one before changes that one's line when it is the newest and nothing went
+    /// wrong, even if the TV showed it already; `text` then keeps where the steps started. Else
+    /// it gets a new line, and older steps still on their way give way: the TV ends where this
+    /// one goes.
+    fn step(
         &mut self,
+        what: &'static str,
+        same: impl Fn(&str) -> bool,
         kind: impl Fn(&Expect) -> bool,
         expect: Expect,
-        text: impl FnOnce(&str) -> String,
-    ) -> Option<u64> {
-        let warned: Vec<u64> = self
-            .activity
-            .iter()
-            .filter(|entry| matches!(entry.status, Status::Warn(_)))
-            .map(|entry| entry.id)
-            .collect();
-        let until = self.now + CHANGE;
-        let pending = self
-            .pending
-            .iter_mut()
-            .find(|pending| kind(&pending.expect) && !warned.contains(&pending.entry))?;
-        pending.expect = expect;
-        pending.until = until;
-        let id = pending.entry;
-        if let Some(entry) = self.activity.iter_mut().find(|entry| entry.id == id) {
-            entry.text = text(&entry.text);
+        text: String,
+    ) -> u64 {
+        let now = self.now;
+        let before = self.activity.front_mut().filter(|entry| {
+            entry.what == what
+                && entry.origin == Origin::Telka
+                && matches!(entry.status, Status::Waiting | Status::Done(_))
+                && now.duration_since(entry.at) < FOLD
+                && same(&entry.text)
+        });
+        if let Some(entry) = before {
+            entry.text = match (entry.text.split_once(" → "), text.split_once(" → ")) {
+                (Some((from, _)), Some((_, to))) => format!("{from} → {to}"),
+                _ => text,
+            };
+            entry.at = now;
+            entry.status = Status::Waiting;
+            let id = entry.id;
+            self.pending.retain(|pending| pending.entry != id);
+            self.pending.push(Pending {
+                entry: id,
+                expect,
+                since: now,
+                until: now + CHANGE,
+            });
+            return id;
         }
-        Some(id)
+        let older: Vec<u64> = self
+            .pending
+            .iter()
+            .filter(|pending| kind(&pending.expect))
+            .map(|pending| pending.entry)
+            .collect();
+        self.pending.retain(|pending| !kind(&pending.expect));
+        for entry in older {
+            if !self.warned(entry) {
+                self.settle_entry(entry, Status::Done(None));
+            }
+        }
+        self.expect(what, text, expect, CHANGE)
     }
 
     fn press(&mut self, button: Button) -> Vec<Effect> {
@@ -964,43 +976,13 @@ impl Model {
             .map_or(100, |volume| volume.max);
         let target =
             u8::try_from((i16::from(level) + step).clamp(0, i16::from(max))).unwrap_or(level);
-        // Steps close together change the line of the steps before.
-        let recent = self.activity.front().is_some_and(|entry| {
-            entry.what == "volume"
-                && entry.origin == Origin::Telka
-                && entry.status == Status::Waiting
-                && self.now.duration_since(entry.at) < FOLD
-                && self.pending.iter().any(|pending| {
-                    pending.entry == entry.id && matches!(pending.expect, Expect::Volume(_))
-                })
-        });
-        if recent {
-            let entry = self.activity.front_mut().expect("checked above");
-            let from = entry
-                .text
-                .split(" → ")
-                .next()
-                .unwrap_or_default()
-                .to_owned();
-            entry.text = format!("{from} → {target}");
-            entry.at = self.now;
-            let id = entry.id;
-            for pending in &mut self.pending {
-                if pending.entry == id {
-                    pending.expect = Expect::Volume(target);
-                    pending.until = self.now + CHANGE;
-                }
-            }
-        } else {
-            self.pending
-                .retain(|pending| !matches!(pending.expect, Expect::Volume(_)));
-            self.expect(
-                "volume",
-                format!("{level} → {target}"),
-                Expect::Volume(target),
-                CHANGE,
-            );
-        }
+        self.step(
+            "volume",
+            |text| text.contains(" → "),
+            |expect| matches!(expect, Expect::Volume(_)),
+            Expect::Volume(target),
+            format!("{level} → {target}"),
+        );
         vec![Effect::Volume(target)]
     }
 
@@ -1646,6 +1628,37 @@ pub mod tests {
         model.update(Msg::Changed(volume(14, false)));
         assert!(matches!(model.activity[0].status, Status::Done(Some(_))));
         assert_eq!(model.shown_volume(), Some((14, false)));
+        // A step close after one the TV showed already still changes its line.
+        later(&mut model, 500);
+        model.update(key(KeyCode::Char('+')));
+        assert_eq!(model.activity.len(), 2);
+        assert_eq!(model.activity[0].text, "12 → 15");
+        assert_eq!(model.activity[0].status, Status::Waiting);
+        model.update(Msg::Changed(volume(15, false)));
+        assert!(matches!(model.activity[0].status, Status::Done(Some(_))));
+        // Later, a new line.
+        later(&mut model, 1500);
+        model.update(key(KeyCode::Char('-')));
+        assert_eq!(model.activity.len(), 3);
+        assert_eq!(model.activity[0].text, "15 → 14");
+    }
+
+    #[test]
+    fn a_step_on_a_new_line_settles_the_older_one_on_its_way() {
+        let mut model = live();
+        model.update(key(KeyCode::Char('+')));
+        let first = model.activity[0].id;
+        // Something else comes between, so the next step gets a line of its own.
+        model.update(key(KeyCode::Char('m')));
+        model.update(key(KeyCode::Char('+')));
+        assert_eq!(model.activity[0].text, "13 → 14");
+        let older = model
+            .activity
+            .iter()
+            .find(|entry| entry.id == first)
+            .unwrap();
+        assert_eq!(older.status, Status::Done(None));
+        assert_eq!(model.shown_volume(), Some((14, true)));
     }
 
     #[test]
