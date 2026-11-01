@@ -10,20 +10,44 @@ SSAP API and acts on a real TV that someone may be watching.
 
 ## Status
 
-Early development: the command line and the interactive TUI are complete, with typing into the
-TV, the mouse as its pointer and the picture settings. Verified live on an LG C1 (OLED65C11LB)
-with webOS 6.5.3.
+First release: the command line and the interactive TUI are complete, with typing into the TV,
+the mouse as its pointer and the picture settings. What telka asks of the TV was verified live
+on an LG C1 (OLED65C11LB) with webOS 6.5.3: pairing, buttons, volume, apps and inputs, the
+screen, typing, toasts, picture settings and Wake-on-LAN. telka itself is tested against a fake
+TV, and was tried on the C1 only where it changes nothing.
 
 ## Install
+
+Download the archive for your system from the
+[latest release](https://github.com/lednifrolg/telka/releases/latest) and put `telka` on your
+PATH:
+
+```sh
+# Linux: x86_64-unknown-linux-musl or aarch64-unknown-linux-musl
+# macOS: aarch64-apple-darwin (Apple silicon) or x86_64-apple-darwin (Intel)
+target=x86_64-unknown-linux-musl
+latest=https://github.com/lednifrolg/telka/releases/latest/download
+curl -fsSLO "$latest/telka-$target.tar.gz"
+tar -xzf "telka-$target.tar.gz"
+mkdir -p ~/.local/bin && install -m 755 "telka-$target/telka" ~/.local/bin/
+```
+
+The archive also holds shell completions and man pages. With the GitHub CLI, this checks that
+the archive was built by this repository's release workflow:
+
+```sh
+gh attestation verify "telka-$target.tar.gz" --repo lednifrolg/telka \
+  --signer-workflow lednifrolg/telka/.github/workflows/release.yml
+```
 
 From source, with a recent Rust:
 
 ```sh
-cargo install --git https://github.com/lednifrolg/telka --locked telka
+cargo install --git https://github.com/lednifrolg/telka --tag v0.1.0 --locked telka
 ```
 
-or from a clone, `cargo install --path crates/telka --locked`. Shell completions and man pages
-come from the binary:
+or from a clone, `cargo install --path crates/telka --locked`. The binary writes its shell
+completions and man pages too:
 
 ```sh
 telka completions bash > ~/.local/share/bash-completion/completions/telka
