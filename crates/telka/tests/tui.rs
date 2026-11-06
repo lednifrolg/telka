@@ -80,7 +80,10 @@ impl Screen {
                 let result = output.read(&mut buffer);
                 eprintln!("DEBUG pty read {result:?}");
                 let Ok(read @ 1..) = result else { break };
-                eprintln!("DEBUG pty bytes {:?}", String::from_utf8_lossy(&buffer[..read]));
+                eprintln!(
+                    "DEBUG pty bytes {:?}",
+                    String::from_utf8_lossy(&buffer[..read])
+                );
                 screen.lock().unwrap().process(&buffer[..read]);
             }
         });
@@ -116,7 +119,8 @@ impl Screen {
             }
             assert!(
                 Instant::now() < deadline,
-                "no line with {parts:?} on the screen:\n{text}\nDEBUG telka {:?}", self.child.lock().unwrap().try_wait()
+                "no line with {parts:?} on the screen:\n{text}\nDEBUG telka {:?}",
+                self.child.lock().unwrap().try_wait()
             );
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
@@ -360,10 +364,12 @@ fn debug_probe(name: &str, delays: &'static [u64]) {
     let reader_log = log.clone();
     std::thread::spawn(move || {
         let mut buffer = [0; 8192];
-        loop {
-            let Ok(read @ 1..) = output.read(&mut buffer) else { break };
+        while let Ok(read @ 1..) = output.read(&mut buffer) {
             let text = String::from_utf8_lossy(&buffer[..read]).into_owned();
-            reader_log.lock().unwrap().push(format!("{:?} read {text:?}", started.elapsed()));
+            reader_log
+                .lock()
+                .unwrap()
+                .push(format!("{:?} read {text:?}", started.elapsed()));
             if text.contains("\x1b[6n") {
                 for &delay in delays {
                     let keys = keys.clone();
@@ -373,7 +379,9 @@ fn debug_probe(name: &str, delays: &'static [u64]) {
                         let mut keys = keys.lock().unwrap();
                         keys.write_all(b"\x1b[1;1R").unwrap();
                         keys.flush().unwrap();
-                        log.lock().unwrap().push(format!("{:?} answered after {delay} ms", started.elapsed()));
+                        log.lock()
+                            .unwrap()
+                            .push(format!("{:?} answered after {delay} ms", started.elapsed()));
                     });
                 }
             }
@@ -381,7 +389,10 @@ fn debug_probe(name: &str, delays: &'static [u64]) {
     });
     std::thread::sleep(Duration::from_secs(6));
     let status = child.try_wait();
-    eprintln!("DEBUG probe {name}: status {status:?}\n{}", log.lock().unwrap().join("\n"));
+    eprintln!(
+        "DEBUG probe {name}: status {status:?}\n{}",
+        log.lock().unwrap().join("\n")
+    );
     let _ = child.kill();
 }
 
