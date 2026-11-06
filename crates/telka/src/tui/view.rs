@@ -782,7 +782,7 @@ fn hint_bar(model: &Model, frame: &mut Frame, area: Rect, shape: Shape) {
         Some(notice) if notice.until > model.now => {
             Span::styled(format!("{} ", notice.text), Style::new().fg(WARN))
         }
-        _ => Span::styled(concat!("telka ", env!("CARGO_PKG_VERSION"), " "), DIM),
+        _ => Span::styled(format!("telka {} ", model.version), DIM),
     };
     let left = |hints: &[(u8, &str, &str)]| {
         let mut left = vec![Span::raw(" ")];

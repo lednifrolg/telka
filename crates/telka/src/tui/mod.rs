@@ -67,6 +67,7 @@ pub async fn run(paths: Paths) -> Result<(), AppError> {
     let (mut model, effects) = Model::start(Start {
         now: Timestamp::now(),
         tz: TimeZone::system(),
+        version: env!("CARGO_PKG_VERSION"),
         animations: config.animations(),
     });
     let mut terminal = ratatui::init();

@@ -1680,7 +1680,7 @@ dependencies = [
 
 [[package]]
 name = "telka"
-version = "0.1.0"
+version = "0.2.0-rc.1"
 dependencies = [
  "anstream",
  "anstyle",
@@ -2000,7 +2000,7 @@ checksum = "ccf3ec651a847eb01de73ccad15eb7d99f80485de043efb2f370cd654f4ea44b"
 
 [[package]]
 name = "webos"
-version = "0.1.0"
+version = "0.2.0-rc.1"
 dependencies = [
  "futures-util",
  "if-addrs",

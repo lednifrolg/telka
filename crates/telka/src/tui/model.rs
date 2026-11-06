@@ -390,12 +390,15 @@ pub struct Notice {
 pub struct Start {
     pub now: Timestamp,
     pub tz: TimeZone,
+    /// telka's version, for the status line.
+    pub version: &'static str,
     pub animations: bool,
 }
 
 pub struct Model {
     pub now: Timestamp,
     pub tz: TimeZone,
+    pub version: &'static str,
     pub phase: Phase,
     /// The TV as last known; kept while it is off, so the panes say which TV.
     pub tv: Option<Snapshot>,
@@ -429,6 +432,7 @@ impl Model {
         let model = Self {
             now: start.now,
             tz: start.tz,
+            version: start.version,
             phase: Phase::Connecting,
             tv: None,
             known: None,
@@ -1497,6 +1501,8 @@ pub mod tests {
         Start {
             now: now(),
             tz: TimeZone::UTC,
+            // Fixed, so the snapshots of the screen stay the same from release to release.
+            version: "0.1.0",
             animations: true,
         }
     }
