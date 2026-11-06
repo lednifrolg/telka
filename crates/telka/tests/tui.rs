@@ -347,29 +347,68 @@ async fn a_field_with_focus_before_the_tui_starts_opens_the_line() {
 }
 
 #[cfg(windows)]
-#[test]
-fn debug_conpty_with_cmd() {
+fn debug_probe(name: &str, delays: &'static [u64]) {
     let pty = native_pty_system().openpty(SIZE).unwrap();
     let mut command = CommandBuilder::new("cmd.exe");
     command.args(["/c", "echo", "hello-from-cmd"]);
     let mut child = pty.slave.spawn_command(command).unwrap();
     drop(pty.slave);
     let keys: Keys = Arc::new(Mutex::new(pty.master.take_writer().unwrap()));
-    let (rows, cols) = (NonZero::new(SIZE.rows), NonZero::new(SIZE.cols));
-    let parser = vt100::Parser::new_with_callbacks(rows.unwrap(), cols.unwrap(), 0, Replies(keys));
-    let parser = Arc::new(Mutex::new(parser));
     let mut output = pty.master.try_clone_reader().unwrap();
-    let screen = parser.clone();
+    let started = Instant::now();
+    let log = Arc::new(Mutex::new(Vec::<String>::new()));
+    let reader_log = log.clone();
     std::thread::spawn(move || {
         let mut buffer = [0; 8192];
         loop {
-            let result = output.read(&mut buffer);
-            let Ok(read @ 1..) = result else { break };
-            eprintln!("DEBUG cmd bytes {:?}", String::from_utf8_lossy(&buffer[..read]));
-            screen.lock().unwrap().process(&buffer[..read]);
+            let Ok(read @ 1..) = output.read(&mut buffer) else { break };
+            let text = String::from_utf8_lossy(&buffer[..read]).into_owned();
+            reader_log.lock().unwrap().push(format!("{:?} read {text:?}", started.elapsed()));
+            if text.contains("\x1b[6n") {
+                for &delay in delays {
+                    let keys = keys.clone();
+                    let log = reader_log.clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(Duration::from_millis(delay));
+                        let mut keys = keys.lock().unwrap();
+                        keys.write_all(b"\x1b[1;1R").unwrap();
+                        keys.flush().unwrap();
+                        log.lock().unwrap().push(format!("{:?} answered after {delay} ms", started.elapsed()));
+                    });
+                }
+            }
         }
     });
-    std::thread::sleep(Duration::from_secs(5));
-    eprintln!("DEBUG cmd status {:?}", child.try_wait());
-    panic!("DEBUG cmd screen:\n{}", parser.lock().unwrap().screen().contents());
+    std::thread::sleep(Duration::from_secs(6));
+    let status = child.try_wait();
+    eprintln!("DEBUG probe {name}: status {status:?}\n{}", log.lock().unwrap().join("\n"));
+    let _ = child.kill();
+}
+
+#[cfg(windows)]
+#[test]
+fn debug_probe_no_answer() {
+    debug_probe("no answer", &[]);
+    panic!("DEBUG");
+}
+
+#[cfg(windows)]
+#[test]
+fn debug_probe_at_once() {
+    debug_probe("at once", &[0]);
+    panic!("DEBUG");
+}
+
+#[cfg(windows)]
+#[test]
+fn debug_probe_after_500() {
+    debug_probe("after 500 ms", &[500]);
+    panic!("DEBUG");
+}
+
+#[cfg(windows)]
+#[test]
+fn debug_probe_twice() {
+    debug_probe("twice", &[0, 500]);
+    panic!("DEBUG");
 }
