@@ -43,6 +43,7 @@ impl vt100::Callbacks for Replies {
             let mut keys = self.0.lock().unwrap();
             write!(keys, "\x1b[{};{}R", row + 1, col + 1).unwrap();
             keys.flush().unwrap();
+            eprintln!("DEBUG wrote the answer");
         }
     }
 }
@@ -51,8 +52,7 @@ impl vt100::Callbacks for Replies {
 struct Screen {
     parser: Arc<Mutex<vt100::Parser<Replies>>>,
     keys: Keys,
-    child: Box<dyn Child + Send + Sync>,
-    debug_child: Arc<Mutex<Option<u32>>>,
+    child: Mutex<Box<dyn Child + Send + Sync>>,
     // Closing it hangs the terminal up.
     _master: Box<dyn MasterPty + Send>,
 }
@@ -86,10 +86,9 @@ impl Screen {
         });
         eprintln!("DEBUG spawned pid {:?}", child.process_id());
         Self {
-            debug_child: Arc::new(Mutex::new(None)),
             parser,
             keys,
-            child,
+            child: Mutex::new(child),
             _master: pty.master,
         }
     }
@@ -117,7 +116,7 @@ impl Screen {
             }
             assert!(
                 Instant::now() < deadline,
-                "no line with {parts:?} on the screen:\n{text}\nDEBUG {:?}", self.debug_child
+                "no line with {parts:?} on the screen:\n{text}\nDEBUG telka {:?}", self.child.lock().unwrap().try_wait()
             );
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
@@ -141,7 +140,7 @@ impl Screen {
         self.press("q");
         let deadline = Instant::now() + WAIT;
         loop {
-            if let Some(status) = self.child.try_wait().unwrap() {
+            if let Some(status) = self.child.get_mut().unwrap().try_wait().unwrap() {
                 return i32::try_from(status.exit_code()).unwrap();
             }
             assert!(Instant::now() < deadline, "telka did not quit");
@@ -345,4 +344,32 @@ async fn a_field_with_focus_before_the_tui_starts_opens_the_line() {
         })
         .await;
     assert_eq!(screen.quit().await, 0);
+}
+
+#[cfg(windows)]
+#[test]
+fn debug_conpty_with_cmd() {
+    let pty = native_pty_system().openpty(SIZE).unwrap();
+    let mut command = CommandBuilder::new("cmd.exe");
+    command.args(["/c", "echo", "hello-from-cmd"]);
+    let mut child = pty.slave.spawn_command(command).unwrap();
+    drop(pty.slave);
+    let keys: Keys = Arc::new(Mutex::new(pty.master.take_writer().unwrap()));
+    let (rows, cols) = (NonZero::new(SIZE.rows), NonZero::new(SIZE.cols));
+    let parser = vt100::Parser::new_with_callbacks(rows.unwrap(), cols.unwrap(), 0, Replies(keys));
+    let parser = Arc::new(Mutex::new(parser));
+    let mut output = pty.master.try_clone_reader().unwrap();
+    let screen = parser.clone();
+    std::thread::spawn(move || {
+        let mut buffer = [0; 8192];
+        loop {
+            let result = output.read(&mut buffer);
+            let Ok(read @ 1..) = result else { break };
+            eprintln!("DEBUG cmd bytes {:?}", String::from_utf8_lossy(&buffer[..read]));
+            screen.lock().unwrap().process(&buffer[..read]);
+        }
+    });
+    std::thread::sleep(Duration::from_secs(5));
+    eprintln!("DEBUG cmd status {:?}", child.try_wait());
+    panic!("DEBUG cmd screen:\n{}", parser.lock().unwrap().screen().contents());
 }
