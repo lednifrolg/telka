@@ -1,8 +1,11 @@
 //! End to end: the real `telka` binary against a fake TV.
 
 use std::fs;
+use std::path::Path;
+use std::process::Output;
 
 use serde_json::Value;
+use tokio::process::Command;
 
 mod common;
 
@@ -55,6 +58,75 @@ async fn pairing_waits_for_the_prompt_and_keeps_the_key_private() {
         "{}",
         stdout(&again)
     );
+}
+
+/// Runs telka without `TELKA_HOME`, so it keeps its files in the usual locations of the system,
+/// which `locations` points elsewhere.
+async fn run_without_telka_home(
+    telka: &Telka,
+    args: &[&str],
+    locations: &impl Fn(&mut Command) -> &mut Command,
+) -> Output {
+    let mut command = telka.command(args);
+    locations(command.env_remove("TELKA_HOME"));
+    command.output().await.unwrap()
+}
+
+/// Pairs, then reads the status of the TV, off by then, with the config at `config` giving its
+/// address: the status shows that address only when telka read the config there.
+async fn pair_and_read_the_config(
+    telka: &Telka,
+    config: &Path,
+    locations: impl Fn(&mut Command) -> &mut Command,
+) {
+    let pair = run_without_telka_home(telka, &["pair"], &locations).await;
+    assert_eq!(code(&pair), 0, "{}", stderr(&pair));
+
+    fs::create_dir_all(config.parent().unwrap()).unwrap();
+    fs::write(config, "tv = \"192.0.2.7\"\n").unwrap();
+    telka.tv.state().on = false;
+    let status = run_without_telka_home(telka, &["status"], &locations).await;
+    assert_eq!(code(&status), 0, "{}", stderr(&status));
+    assert!(
+        stdout(&status).contains("no answer at 192.0.2.7"),
+        "{}",
+        stdout(&status)
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn files_follow_the_xdg_directories() {
+    let telka = Telka::new().await;
+    let home = telka.home.path();
+
+    let config = home.join("home/.config/telka/config.toml");
+    pair_and_read_the_config(&telka, &config, |command| {
+        command
+            .env_remove("XDG_CONFIG_HOME")
+            .env("HOME", home.join("home"))
+            .env("XDG_STATE_HOME", home.join("xdg-state"))
+    })
+    .await;
+
+    assert!(home.join("xdg-state/telka/tv.json").exists());
+}
+
+#[cfg(windows)]
+#[tokio::test(flavor = "multi_thread")]
+async fn files_follow_the_app_data_directories() {
+    let telka = Telka::new().await;
+    let home = telka.home.path();
+
+    let config = home.join(r"roaming\telka\config.toml");
+    pair_and_read_the_config(&telka, &config, |command| {
+        command
+            .env("APPDATA", home.join("roaming"))
+            .env("LOCALAPPDATA", home.join("local"))
+    })
+    .await;
+
+    assert!(home.join(r"local\telka\state\tv.json").exists());
 }
 
 #[tokio::test(flavor = "multi_thread")]
