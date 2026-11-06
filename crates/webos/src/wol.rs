@@ -145,20 +145,27 @@ pub async fn wake_and_wait(
     options: &Options,
     wait: Duration,
 ) -> Result<Hello, Error> {
-    let targets = targets_for(ip, if_addrs::get_if_addrs().unwrap_or_default());
+    let networks = if_addrs::get_if_addrs()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|interface| match interface.addr {
+            if_addrs::IfAddr::V4(local) => Some(local),
+            if_addrs::IfAddr::V6(_) => None,
+        });
+    let targets = targets_for(ip, networks);
     wake_until(mac, &targets, Endpoint::secure(ip), options, wait).await
 }
 
-/// Ports 9 and 7 of the broadcast to everyone and of the broadcast of each local network that
-/// `ip` belongs to.
-fn targets_for(ip: IpAddr, interfaces: Vec<if_addrs::Interface>) -> Vec<SocketAddr> {
+/// Ports 9 and 7 of the broadcast to everyone and of the broadcast of each local network in
+/// `networks` that `ip` belongs to.
+fn targets_for(
+    ip: IpAddr,
+    networks: impl IntoIterator<Item = if_addrs::Ifv4Addr>,
+) -> Vec<SocketAddr> {
     let mut addresses = vec![Ipv4Addr::BROADCAST];
     if let IpAddr::V4(tv) = ip {
-        for interface in interfaces {
-            if let if_addrs::IfAddr::V4(local) = interface.addr
-                && !local.is_loopback()
-                && same_network(local.ip, tv, local.netmask)
-            {
+        for local in networks {
+            if !local.is_loopback() && same_network(local.ip, tv, local.netmask) {
                 addresses.push(
                     local
                         .broadcast
@@ -247,24 +254,18 @@ mod tests {
 
     #[test]
     fn packets_also_go_to_the_tvs_own_network() {
-        let interface = |ip: &str, netmask: &str, broadcast: Option<&str>| if_addrs::Interface {
-            name: "eth0".into(),
-            addr: if_addrs::IfAddr::V4(if_addrs::Ifv4Addr {
-                ip: ip.parse().unwrap(),
-                netmask: netmask.parse().unwrap(),
-                prefixlen: 24,
-                broadcast: broadcast.map(|b| b.parse().unwrap()),
-            }),
-            index: None,
-            oper_status: if_addrs::IfOperStatus::Up,
-            is_p2p: false,
+        let local = |ip: &str, netmask: &str, broadcast: Option<&str>| if_addrs::Ifv4Addr {
+            ip: ip.parse().unwrap(),
+            netmask: netmask.parse().unwrap(),
+            prefixlen: 24,
+            broadcast: broadcast.map(|b| b.parse().unwrap()),
         };
         let targets = targets_for(
             "192.168.1.30".parse().unwrap(),
-            vec![
-                interface("127.0.0.1", "255.0.0.0", None),
-                interface("192.168.1.20", "255.255.255.0", None),
-                interface("10.0.0.2", "255.255.255.0", Some("10.0.0.255")),
+            [
+                local("127.0.0.1", "255.0.0.0", None),
+                local("192.168.1.20", "255.255.255.0", None),
+                local("10.0.0.2", "255.255.255.0", Some("10.0.0.255")),
             ],
         );
         let shown: Vec<String> = targets.iter().map(ToString::to_string).collect();
@@ -277,10 +278,7 @@ mod tests {
                 "192.168.1.255:7"
             ]
         );
-        assert_eq!(
-            targets_for("fd00::30".parse().unwrap(), Vec::new()).len(),
-            2
-        );
+        assert_eq!(targets_for("fd00::30".parse().unwrap(), []).len(), 2);
     }
 
     #[test]

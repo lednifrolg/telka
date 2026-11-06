@@ -666,6 +666,21 @@ async fn follow(
     };
     // Not every TV tells about its text fields; without it, `t` still opens the line.
     let mut keyboard = client.watch::<Keyboard>().await.ok();
+    // What changed after the snapshot and before the watches started; the same values change
+    // nothing. A field with focus already opens the line.
+    for change in [
+        Change::Power(power.current().clone()),
+        Change::App(front.current().0.clone()),
+        Change::Volume(volume.current().clone()),
+        Change::Output(output.current().0.clone()),
+    ] {
+        report(Msg::Changed(change));
+    }
+    if let Some(focus) = keyboard.as_ref().map(webos::Watch::current)
+        && focus.focused
+    {
+        report(Msg::Changed(Change::Keyboard(focus.clone())));
+    }
     loop {
         let change = tokio::select! {
             change = power.next() => change.map(|change| change.map(Change::Power)),

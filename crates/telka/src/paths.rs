@@ -6,9 +6,8 @@ use std::path::{Path, PathBuf};
 
 use crate::error::AppError;
 
-/// `<value>/telka` when the XDG variable holds an absolute path, else
-/// `<home>/<fallback>/telka`.
-fn xdg(value: Option<OsString>, home: &Path, fallback: &str) -> PathBuf {
+/// `<value>/telka` when the variable holds an absolute path, else `<home>/<fallback>/telka`.
+fn base(value: Option<OsString>, home: &Path, fallback: &str) -> PathBuf {
     value
         .map(PathBuf::from)
         .filter(|dir| dir.is_absolute())
@@ -24,8 +23,7 @@ pub struct Paths {
 }
 
 impl Paths {
-    /// The XDG locations (`~/.config/telka`, `~/.local/state/telka`), or both under
-    /// `TELKA_HOME` when it is set.
+    /// The usual locations of the system, or both under `TELKA_HOME` when it is set.
     pub fn discover() -> Result<Self, AppError> {
         if let Some(home) = env::var_os("TELKA_HOME") {
             return Ok(Self::under(Path::new(&home)));
@@ -33,10 +31,26 @@ impl Paths {
         let home = env::home_dir()
             .filter(|home| home.is_absolute())
             .ok_or_else(|| AppError::Usage("cannot find the home directory".into()))?;
-        Ok(Self {
-            config: xdg(env::var_os("XDG_CONFIG_HOME"), &home, ".config"),
-            state: xdg(env::var_os("XDG_STATE_HOME"), &home, ".local/state"),
-        })
+        Ok(Self::of_system(&home))
+    }
+
+    /// XDG locations: `~/.config/telka` and `~/.local/state/telka`.
+    #[cfg(not(windows))]
+    fn of_system(home: &Path) -> Self {
+        Self {
+            config: base(env::var_os("XDG_CONFIG_HOME"), home, ".config"),
+            state: base(env::var_os("XDG_STATE_HOME"), home, ".local/state"),
+        }
+    }
+
+    /// The config in `%APPDATA%\telka`, which may roam with the user; the state, which belongs
+    /// to this computer, in `%LOCALAPPDATA%\telka\state`.
+    #[cfg(windows)]
+    fn of_system(home: &Path) -> Self {
+        Self {
+            config: base(env::var_os("APPDATA"), home, r"AppData\Roaming"),
+            state: base(env::var_os("LOCALAPPDATA"), home, r"AppData\Local").join("state"),
+        }
     }
 
     pub fn under(home: &Path) -> Self {
@@ -61,20 +75,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn xdg_variables_must_be_absolute() {
-        let home = Path::new("/home/user");
+    fn variables_win_only_with_absolute_paths() {
+        let root = Path::new(if cfg!(windows) { r"C:\" } else { "/" });
+        let home = root.join("home");
         assert_eq!(
-            xdg(Some("/tmp/state".into()), home, ".local/state"),
-            Path::new("/tmp/state/telka")
+            base(Some(root.join("state").into()), &home, "fallback"),
+            root.join("state/telka")
         );
         assert_eq!(
-            xdg(Some("relative".into()), home, ".local/state"),
-            Path::new("/home/user/.local/state/telka")
+            base(Some("relative".into()), &home, "fallback"),
+            home.join("fallback/telka")
         );
-        assert_eq!(
-            xdg(None, home, ".local/state"),
-            Path::new("/home/user/.local/state/telka")
-        );
+        assert_eq!(base(None, &home, "fallback"), home.join("fallback/telka"));
         assert_eq!(
             Paths::under(Path::new("/x")).tv(),
             Path::new("/x/state/tv.json")

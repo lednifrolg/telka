@@ -1,7 +1,7 @@
 # telka
 
 Terminal remote for LG webOS TVs over their local API: an interactive TUI that works like the
-remote control, and one-shot commands for the shell.
+remote control, and one-shot commands for the shell, on Linux, macOS and Windows.
 
 Unofficial project, not affiliated with LG Electronics. It talks to the TV's undocumented local
 SSAP API and acts on a real TV that someone may be watching.
@@ -32,8 +32,25 @@ tar -xzf "telka-$target.tar.gz"
 mkdir -p ~/.local/bin && install -m 755 "telka-$target/telka" ~/.local/bin/
 ```
 
-The archive also holds shell completions and man pages. With the GitHub CLI, this checks that
-the archive was built by this repository's release workflow:
+On Windows, in PowerShell:
+
+```powershell
+# x86_64-pc-windows-msvc, or aarch64-pc-windows-msvc on ARM
+$target = "x86_64-pc-windows-msvc"
+$latest = "https://github.com/lednifrolg/telka/releases/latest/download"
+curl.exe -fsSLO "$latest/telka-$target.zip"
+tar.exe -xf "telka-$target.zip"
+$bin = "$env:LOCALAPPDATA\Programs\telka"
+New-Item -ItemType Directory -Force $bin | Out-Null
+Copy-Item "telka-$target\telka.exe" $bin
+# Once: add it to your PATH, then open a new terminal
+$path = [Environment]::GetEnvironmentVariable("Path", "User")
+[Environment]::SetEnvironmentVariable("Path", "$path;$bin", "User")
+```
+
+The archives also hold shell completions and, except on Windows, man pages. With the GitHub
+CLI, this checks that the archive was built by this repository's release workflow (on Windows,
+for the `.zip` and on one line):
 
 ```sh
 gh attestation verify "telka-$target.tar.gz" --repo lednifrolg/telka \
@@ -55,6 +72,9 @@ telka completions zsh > ~/.zfunc/_telka      # a directory on your $fpath
 telka completions fish > ~/.config/fish/completions/telka.fish
 telka man ~/.local/share/man/man1
 ```
+
+In PowerShell, add `telka completions powershell | Out-String | Invoke-Expression` to your
+`$PROFILE`.
 
 ## Usage
 
@@ -124,14 +144,15 @@ settings need the signed manifest, and the TV does not tell its picture mode.
 
 `telka pair` finds the TV on the network, or takes its address, and asks you to accept telka on
 the TV with the remote; the prompt names LG's remote app, whose signed manifest telka uses. The
-key the TV issues is kept in `~/.local/state/telka/tv.json`, readable only by you, together with
-the TV's identity: another TV at the address is refused. When the TV's address changes, telka
-finds it again by its serial number. Nothing leaves your home network. To turn the TV on, telka
-sends Wake-on-LAN, which needs "Turn on via Wi-Fi" in the TV's settings.
+key the TV issues is kept in `~/.local/state/telka/tv.json`
+(`%LOCALAPPDATA%\telka\state\tv.json` on Windows), readable only by you, together with the
+TV's identity: another TV at the address is refused. When the TV's address changes, telka finds
+it again by its serial number. Nothing leaves your home network. To turn the TV on, telka sends
+Wake-on-LAN, which needs "Turn on via Wi-Fi" in the TV's settings.
 
 ## Configuration
 
-`~/.config/telka/config.toml` is optional:
+`~/.config/telka/config.toml` is optional (`%APPDATA%\telka\config.toml` on Windows):
 
 ```toml
 tv = "192.168.1.30"   # a fixed address: telka never looks for the TV on the network
@@ -139,7 +160,8 @@ pointer_speed = 12    # pixels on the TV per column a drag moves the pointer
 animations = false    # no lit buttons, flashing changes or running bars in the TUI
 ```
 
-`TELKA_HOME` puts config and state in one directory.
+`TELKA_HOME` puts config and state in one directory. On Windows, the access rules of your user
+profile keep these files private; a `TELKA_HOME` outside it gets the rules of its directory.
 
 ## Recipes
 
