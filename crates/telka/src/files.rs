@@ -1,8 +1,10 @@
 //! Private files: owner-only permissions and atomic replacement.
+//!
+//! On Windows, files and directories take the access rules of the directory they are made in;
+//! those of the user profile, where telka keeps its files, admit only the owner.
 
 use std::fs::{self, DirBuilder, File};
 use std::io::{self, Write};
-use std::os::unix::fs::DirBuilderExt;
 use std::path::Path;
 
 use serde::Serialize;
@@ -12,11 +14,11 @@ use crate::error::AppError;
 
 /// Creates `dir` and its parents, readable only by the owner.
 pub fn private_dir(dir: &Path) -> Result<(), AppError> {
-    DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(dir)
-        .map_err(|e| AppError::io(dir, e))
+    let mut builder = DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder.create(dir).map_err(|e| AppError::io(dir, e))
 }
 
 fn parent(path: &Path) -> &Path {
@@ -76,8 +78,6 @@ pub fn remove(path: &Path) -> Result<bool, AppError> {
 
 #[cfg(test)]
 mod tests {
-    use std::os::unix::fs::PermissionsExt;
-
     use super::*;
 
     #[test]
@@ -87,14 +87,14 @@ mod tests {
         write_json(&path, &vec![1, 2, 3]).unwrap();
 
         assert_eq!(read_json::<Vec<i32>>(&path).unwrap(), Some(vec![1, 2, 3]));
-        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600);
-        let dir_mode = fs::metadata(path.parent().unwrap())
-            .unwrap()
-            .permissions()
-            .mode()
-            & 0o777;
-        assert_eq!(dir_mode, 0o700);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode(&path), 0o600);
+            assert_eq!(mode(path.parent().unwrap()), 0o700);
+        }
         let leftovers = fs::read_dir(path.parent().unwrap()).unwrap().count();
         assert_eq!(leftovers, 1, "temporary file left behind");
         assert!(remove(&path).unwrap());

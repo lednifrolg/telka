@@ -17,7 +17,6 @@
 use std::fs::{self, DirBuilder, OpenOptions};
 use std::io::Write;
 use std::net::IpAddr;
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::Path;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
@@ -266,7 +265,11 @@ const CAPTURES: [(&str, &str, &str); 12] = [
 ];
 
 async fn capture(client: &Client, out: &Path) -> Result {
-    DirBuilder::new().recursive(true).mode(0o700).create(out)?;
+    let mut dir = DirBuilder::new();
+    dir.recursive(true);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut dir, 0o700);
+    dir.create(out)?;
     write_private(
         &out.join("hello.json"),
         &serde_json::to_vec_pretty(&client.hello().raw)?,
@@ -321,14 +324,14 @@ async fn watch(client: &Client, seconds: u64, uris: &[&str]) -> Result {
     Ok(())
 }
 
-/// Writes a file only the user can read: these files hold keys and identifiers.
+/// Writes a file only the user can read: these files hold keys and identifiers. On Windows, it
+/// takes the access rules of its directory.
 fn write_private(path: &Path, bytes: &[u8]) -> Result {
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(path)?;
+    let mut options = OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let mut file = options.open(path)?;
     file.write_all(bytes)?;
     file.write_all(b"\n")?;
     Ok(())

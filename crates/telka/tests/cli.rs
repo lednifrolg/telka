@@ -1,7 +1,6 @@
 //! End to end: the real `telka` binary against a fake TV.
 
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 
 use serde_json::Value;
 
@@ -32,10 +31,15 @@ async fn pairing_waits_for_the_prompt_and_keeps_the_key_private() {
         "com.lge.test"
     );
     let file = telka.file("state/tv.json");
-    assert_eq!(
-        fs::metadata(&file).unwrap().permissions().mode() & 0o777,
-        0o600
-    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        assert_eq!(
+            fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
     let stored: Value = serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
     assert_eq!(stored["key"], KEY);
     assert_eq!(stored["uuid"], UUID);
