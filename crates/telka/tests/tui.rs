@@ -39,6 +39,7 @@ impl vt100::Callbacks for Replies {
     ) {
         if c == 'n' && params == [&[6]] {
             let (row, col) = screen.cursor_position();
+            eprintln!("DEBUG answered the cursor position {row};{col}");
             let mut keys = self.0.lock().unwrap();
             write!(keys, "\x1b[{};{}R", row + 1, col + 1).unwrap();
             keys.flush().unwrap();
@@ -51,6 +52,7 @@ struct Screen {
     parser: Arc<Mutex<vt100::Parser<Replies>>>,
     keys: Keys,
     child: Box<dyn Child + Send + Sync>,
+    debug_child: Arc<Mutex<Option<u32>>>,
     // Closing it hangs the terminal up.
     _master: Box<dyn MasterPty + Send>,
 }
@@ -74,11 +76,17 @@ impl Screen {
         let screen = parser.clone();
         std::thread::spawn(move || {
             let mut buffer = [0; 8192];
-            while let Ok(read @ 1..) = output.read(&mut buffer) {
+            loop {
+                let result = output.read(&mut buffer);
+                eprintln!("DEBUG pty read {result:?}");
+                let Ok(read @ 1..) = result else { break };
+                eprintln!("DEBUG pty bytes {:?}", String::from_utf8_lossy(&buffer[..read]));
                 screen.lock().unwrap().process(&buffer[..read]);
             }
         });
+        eprintln!("DEBUG spawned pid {:?}", child.process_id());
         Self {
+            debug_child: Arc::new(Mutex::new(None)),
             parser,
             keys,
             child,
@@ -109,7 +117,7 @@ impl Screen {
             }
             assert!(
                 Instant::now() < deadline,
-                "no line with {parts:?} on the screen:\n{text}"
+                "no line with {parts:?} on the screen:\n{text}\nDEBUG {:?}", self.debug_child
             );
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
