@@ -61,10 +61,17 @@ fn replace(path: &Path, write: impl FnOnce(&mut File) -> io::Result<()>) -> Resu
     write(temporary.as_file_mut())
         .and_then(|()| temporary.as_file().sync_all())
         .map_err(|e| AppError::io(path, e))?;
-    temporary
-        .persist(path)
+    // Renamed by std rather than `persist`: on Windows, std replaces a file that another process
+    // has open, as one telka may have `tv.json` while another saves the TV's new address, where
+    // `persist` fails with "access denied".
+    let temporary = temporary
+        .into_temp_path()
+        .keep()
         .map_err(|e| AppError::io(path, e.error))?;
-    Ok(())
+    fs::rename(&temporary, path).map_err(|e| {
+        let _ = fs::remove_file(&temporary);
+        AppError::io(path, e)
+    })
 }
 
 /// Deletes `path`; `false` when it did not exist.
@@ -78,6 +85,8 @@ pub fn remove(path: &Path) -> Result<bool, AppError> {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Read;
+
     use super::*;
 
     #[test]
@@ -99,6 +108,21 @@ mod tests {
         assert_eq!(leftovers, 1, "temporary file left behind");
         assert!(remove(&path).unwrap());
         assert!(!remove(&path).unwrap());
+    }
+
+    #[test]
+    fn a_file_is_replaced_while_a_reader_holds_it_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("value.json");
+        write_json(&path, &1).unwrap();
+        let mut reader = File::open(&path).unwrap();
+
+        write_json(&path, &2).unwrap();
+
+        assert_eq!(read_json::<i32>(&path).unwrap(), Some(2));
+        let mut old = String::new();
+        reader.read_to_string(&mut old).unwrap();
+        assert_eq!(old, "1\n");
     }
 
     #[test]
