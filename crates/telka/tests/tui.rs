@@ -21,10 +21,41 @@ const SIZE: PtySize = PtySize {
 /// Longer than the TUI waits for an alert that does not close.
 const WAIT: Duration = Duration::from_secs(10);
 
+/// What goes to telka as typed on its terminal.
+type Keys = Arc<Mutex<Box<dyn Write + Send>>>;
+
+/// Answers what telka's side asks of its terminal: where the cursor is, which the pseudo console
+/// of Windows asks before it shows anything.
+struct Replies(Keys);
+
+impl vt100::Callbacks for Replies {
+    fn unhandled_csi(
+        &mut self,
+        screen: &mut vt100::Screen,
+        _: Option<u8>,
+        _: Option<u8>,
+        params: &[&[u16]],
+        c: char,
+    ) {
+        if c == 'n' && params == [&[6]] {
+            let (row, col) = screen.cursor_position();
+            let answer = format!("\x1b[{};{}R", row + 1, col + 1);
+            // Not from the thread that reads the screen: the pseudo console may wait for its
+            // output to be read before it reads the answer.
+            let keys = self.0.clone();
+            std::thread::spawn(move || {
+                let mut keys = keys.lock().unwrap();
+                keys.write_all(answer.as_bytes()).unwrap();
+                keys.flush().unwrap();
+            });
+        }
+    }
+}
+
 /// `telka` without a command, in a pseudo-terminal.
 struct Screen {
-    parser: Arc<Mutex<vt100::Parser>>,
-    keys: Box<dyn Write + Send>,
+    parser: Arc<Mutex<vt100::Parser<Replies>>>,
+    keys: Keys,
     child: Box<dyn Child + Send + Sync>,
     // Closing it hangs the terminal up.
     _master: Box<dyn MasterPty + Send>,
@@ -40,8 +71,10 @@ impl Screen {
         command.env("TERM", "xterm-256color");
         let child = pty.slave.spawn_command(command).unwrap();
         drop(pty.slave);
+        let keys: Keys = Arc::new(Mutex::new(pty.master.take_writer().unwrap()));
         let (rows, cols) = (NonZero::new(SIZE.rows), NonZero::new(SIZE.cols));
-        let parser = vt100::Parser::new(rows.unwrap(), cols.unwrap(), 0);
+        let replies = Replies(keys.clone());
+        let parser = vt100::Parser::new_with_callbacks(rows.unwrap(), cols.unwrap(), 0, replies);
         let parser = Arc::new(Mutex::new(parser));
         let mut output = pty.master.try_clone_reader().unwrap();
         let screen = parser.clone();
@@ -53,7 +86,7 @@ impl Screen {
         });
         Self {
             parser,
-            keys: pty.master.take_writer().unwrap(),
+            keys,
             child,
             _master: pty.master,
         }
@@ -64,8 +97,9 @@ impl Screen {
     }
 
     fn press(&mut self, keys: &str) {
-        self.keys.write_all(keys.as_bytes()).unwrap();
-        self.keys.flush().unwrap();
+        let mut writer = self.keys.lock().unwrap();
+        writer.write_all(keys.as_bytes()).unwrap();
+        writer.flush().unwrap();
     }
 
     /// Waits until a line on the screen has all of `parts`.
