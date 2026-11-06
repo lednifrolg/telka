@@ -292,3 +292,21 @@ async fn a_text_field_on_the_tv_opens_the_line_and_letters_go_there() {
         .await;
     assert_eq!(screen.quit().await, 0);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_field_with_focus_before_the_tui_starts_opens_the_line() {
+    let telka = Telka::paired().await;
+    telka.tv.state().keyboard = Some("url".into());
+    let screen = Screen::open(&telka);
+
+    screen
+        .shows(&["an address field on the TV has focus"])
+        .await;
+    telka.tv.change(|tv| tv.keyboard = None);
+    screen
+        .until("the line closed", |screen| {
+            !screen.contents().contains("has focus")
+        })
+        .await;
+    assert_eq!(screen.quit().await, 0);
+}
